@@ -1,0 +1,25 @@
+diff a/qdma/qdma_devops.c b/qdma/qdma_devops.c	(rejected hunks)
+@@ -1100,6 +1100,9 @@ int qdma_dev_infos_get(struct rte_eth_dev *dev,
+ 	dev_info->min_rx_bufsize = QDMA_MIN_RXBUFF_SIZE;
+ 	dev_info->max_rx_pktlen = DMA_BRAM_SIZE;
+ 	dev_info->max_mac_addrs = 1;
++	dev_info->hash_key_size = ONIC_EN_RSS_KEY_SIZE;
++	dev_info->reta_size = INDIRECTION_TABLE_SIZE;
++	dev_info->flow_type_rss_offloads = RTE_ETH_RSS_PROTO_MASK;
+
+ 	return 0;
+ }
+@@ -2031,10 +2102,12 @@ static struct eth_dev_ops qdma_eth_dev_ops = {
+ 	.stats_reset              = qdma_dev_stats_reset,
+ 	.rxq_info_get             = qdma_dev_rxq_info_get,
+ 	.txq_info_get             = qdma_dev_txq_info_get,
+-
++	.reta_query 		  	  = qdma_dev_reta_query,
++	.reta_update              = qdma_dev_reta_update,
+
+ };
+
++
+ void qdma_dev_ops_init(struct rte_eth_dev *dev)
+ {
+ 	dev->dev_ops = &qdma_eth_dev_ops;
