@@ -49,6 +49,121 @@
 #include <string.h>
 #include <sys/queue.h>
 #include <sys/types.h>
+#include <time.h>
+
+/* PCAP file format structures */
+typedef struct {
+	uint32_t magic_number;
+	uint16_t version_major;
+	uint16_t version_minor;
+	int32_t  thiszone;
+	uint32_t sigfigs;
+	uint32_t snaplen;
+	uint32_t network;
+} pcap_file_header_t;
+
+typedef struct {
+	uint32_t ts_sec;
+	uint32_t ts_usec;
+	uint32_t incl_len;
+	uint32_t orig_len;
+} pcap_packet_header_t;
+
+static FILE *pcap_file = NULL;
+
+/* Initialize PCAP file for writing */
+static int
+pcap_file_open(const char *filename)
+{
+	pcap_file_header_t file_hdr = {
+	    .magic_number  = 0xa1b2c3d4,  /* PCAP magic number */
+	    .version_major = 2,
+	    .version_minor = 4,
+	    .thiszone      = 0,
+	    .sigfigs       = 0,
+	    .snaplen       = 65535,        /* Maximum packet size */
+	    .network       = 1,            /* Ethernet */
+	};
+
+	pcap_file = fopen(filename, "wb");
+	if (pcap_file == NULL) {
+		printf("Error opening PCAP file: %s\n", filename);
+		return -1;
+	}
+
+	if (fwrite(&file_hdr, sizeof(pcap_file_header_t), 1, pcap_file) != 1) {
+		printf("Error writing PCAP file header\n");
+		fclose(pcap_file);
+		pcap_file = NULL;
+		return -1;
+	}
+
+	fflush(pcap_file);
+	return 0;
+}
+
+/* Write a packet to PCAP file */
+static int
+pcap_write_packet(const uint8_t *packet_data, uint32_t packet_len)
+{
+	pcap_packet_header_t pkt_hdr;
+	struct timespec      ts;
+
+	if (pcap_file == NULL)
+		return -1;
+
+	/* Get current timestamp */
+	clock_gettime(CLOCK_REALTIME, &ts);
+
+	pkt_hdr.ts_sec  = ts.tv_sec;
+	pkt_hdr.ts_usec = ts.tv_nsec / 1000;
+	pkt_hdr.incl_len = packet_len;
+	pkt_hdr.orig_len = packet_len;
+
+	/* Write packet header */
+	if (fwrite(&pkt_hdr, sizeof(pcap_packet_header_t), 1, pcap_file) != 1) {
+		printf("Error writing PCAP packet header\n");
+		return -1;
+	}
+
+	/* Write packet data */
+	if (fwrite(packet_data, packet_len, 1, pcap_file) != 1) {
+		printf("Error writing PCAP packet data\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+/* Close PCAP file */
+static void
+pcap_file_close(void)
+{
+	if (pcap_file != NULL) {
+		fflush(pcap_file);
+		fclose(pcap_file);
+		pcap_file = NULL;
+	}
+}
+
+uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
+int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
+int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
+int qdma_write_bypass_reg_port_id(void *dev_hndl, uint8_t port_id);
+int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid);
+int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func);
+int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
+int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
+
+int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr);
+int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id);
+int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid);
+int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func);
+int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag);
+int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid);
+
+int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
+
 
 struct rte_eth_stats stats;
 uint16_t             port_id = 0;
@@ -62,6 +177,9 @@ struct countmin {
 struct countmin *cm;
 
 static volatile bool force_quit;
+bool silent = false;
+bool dump = false;
+uint64_t phys_addr;
 
 /* MAC updating enabled by default */
 static int mac_updating = 1;
@@ -247,7 +365,6 @@ print_stats(void)
 	if (rte_eth_stats_get(port_id, &stats) < 0) {
 		printf("Error getting stats for port %u\n", port_id);
 	}
-
 	fflush(stdout);
 }
 
@@ -375,7 +492,7 @@ cms_main_loop(void)
 
 	uint64_t start_time  = rte_rdtsc();
 	uint64_t warmup_time = 3 * rte_get_timer_hz();
-	uint64_t stop_time   = (10 * rte_get_timer_hz()) + warmup_time;
+	uint64_t stop_time   = (1000 * rte_get_timer_hz()) + warmup_time;
 	while (!force_quit) {
 
 		cur_tsc = rte_rdtsc();
@@ -406,7 +523,7 @@ cms_main_loop(void)
 
 					/* do this only on main core */
 					if (lcore_id == rte_get_main_lcore()) {
-						print_stats();
+						if (!silent) print_stats();
 						/* reset the timer */
 						timer_tsc = 0;
 					}
@@ -429,12 +546,24 @@ cms_main_loop(void)
 
 				struct rte_ether_hdr *eth;
 				for (j = 0; j < nb_rx; j++) {
+					for (size_t i = 0; i < 32; i++) {
+						printf("%X ", *(((uint8_t*)phys_addr) + i) );
+					}
+					printf("\n");
 					// printf("lcore %u: port %u, queue %d, packet %d\n", lcore_id, portid, q, j);
 					m = pkts_burst[j];
 					// rte_prefetch0(rte_pktmbuf_mtod(m, void *));
 					if  ((prefetch_distance>0) && (j + prefetch_distance < nb_rx)) {
 						rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[j + prefetch_distance], void *));
 					}
+					
+					/* Write packet to PCAP file */
+					if (pcap_file != NULL) {
+						uint8_t *pkt_data = rte_pktmbuf_mtod(m, uint8_t *);
+						uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
+						pcap_write_packet(pkt_data, pkt_len);
+					}
+					
 					count_add(m);
 					cms_simple_forward(m, portid);
 					// rte_pktmbuf_free(m);
@@ -442,6 +571,12 @@ cms_main_loop(void)
 						measured_packets_rx2++;
 					}
 				}
+				//rearm!
+				//rxq->q_pidx_info.pidx = id;
+				//qdma_dev->hw_access->qdma_queue_pidx_update(rxq->dev,
+				//	qdma_dev->is_vf,
+				//	rxq->queue_id, 1, &rxq->q_pidx_info);
+				//
 				if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
 					q--; // if we got MAX_PKT_BURST packets, we need to process them again
 					max_loops--;
@@ -458,16 +593,16 @@ cms_main_loop(void)
 				// }
 			}
 		}
-		if ((cur_tsc - start_time) > stop_time) { // 13 seconds) {
-			end_time = cur_tsc - end_warmup;
-			break;
-		} else if (cur_tsc - start_time > warmup_time) { // 3 seconds
+		//if ((cur_tsc - start_time) > stop_time) { // 13 seconds) {
+		//	end_time = cur_tsc - end_warmup;
+		//	break;
+		//} else if (cur_tsc - start_time > warmup_time) { // 3 seconds
 			// rte_eth_stats_reset(portid); // skip the first 3 seconds
-			printf("Warmup finished\n");
-			after_warmup = true;
-			end_warmup   = cur_tsc;
-			warmup_time  = 1000 * rte_get_timer_hz(); // reset warmup time
-		}
+		//	printf("Warmup finished\n");
+		//	after_warmup = true;
+		//	end_warmup   = cur_tsc;
+		//	warmup_time  = 1000 * rte_get_timer_hz(); // reset warmup time
+		//}
 	}
 }
 
@@ -602,7 +737,9 @@ cms_parse_timer_period(const char *q_arg)
 }
 
 static const char short_options[] = "c:" /* columns  */
-                                    "a"  /* agressive */
+                                    "Q"  /* silent */
+                                    "D"  /* dump pcap */
+				    "a"  /* aggressive */
                                     "P:" /* portmask  */
                                     "q:" /* number of queues */
                                     "T:" /* timer period */
@@ -688,7 +825,12 @@ cms_parse_args(int argc, char **argv)
 				return -1;
 			}
 			break;
-
+		case 'Q':
+			silent=true;
+			break;
+		case 'D':
+			dump=true;
+			break;
 		/* timer period */
 		case 'T':
 			timer_secs = cms_parse_timer_period(optarg);
@@ -996,6 +1138,15 @@ main(int argc, char **argv)
 		ret = rte_eth_dev_configure(portid, cms_rx_queue_per_lcore, 1, &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n", ret, portid);
+		
+		struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+		//struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
+		uint32_t reg_offst=0; //timestamp;
+		uint32_t val=qdma_reg_read_usr(dev,reg_offst);
+		//Timestamp--> QDMA Reg (0x0) Value: 0x28602ca
+		printf("Timestamp--> QDMA Reg (0x%X) Value: 0x%X\n", reg_offst, val);
+		uint32_t cfg_val = qdma_reg_read(dev, 0xBE0); // QDMA_CFG_OFFSET 0x001f0040 --> prefech cache size 64 OK!
+		printf("CFG VAL: 0x%08x\n", cfg_val);
 
 		struct rte_eth_rss_reta_entry64 reta_conf[2048 / RTE_RETA_GROUP_SIZE];
 		int                             i, j;
@@ -1052,6 +1203,19 @@ main(int argc, char **argv)
 				         "Passing of STREAMING_MODE "
 				         "failed\n");
 
+                        rte_pmd_qdma_configure_rx_bypass(portid, x, 2,0); //RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2, 
+                        // Size 0 indicates internal mode descriptor size.
+                        // Write to MDMA_C2H_PFCH_BYP_QID 0x1408 with valid qid.
+			int prefetch_tag;
+			if (qdma_bypass_reg_get_prefetch_tag(dev, 0, &prefetch_tag)) {
+				printf("error reading prefetch tag\n");
+				return -1;
+			}
+                        // EQDMA_C2H_PFCH_BYP_QID_ADDR 0x1408
+                        // Read MDMA_C2H_PFCH_BYP_TAG 0x140C to obtain the prefetch tag
+                        // EQDMA_C2H_PFCH_BYP_TAG_ADDR 0x140C
+                        // send tag to bypass4[17:11] (0x400C)
+
 			ret = rte_eth_rx_queue_setup(
 			    portid, x, nb_rxd, rte_eth_dev_socket_id(portid), &rxq_conf, cms_pktmbuf_pool);
 			if (ret < 0)
@@ -1096,6 +1260,23 @@ main(int argc, char **argv)
 
 		printf("done: \n");
 
+		int qid=0;
+                print_phys(dev,qid);
+		phys_addr = get_desc(dev, qid, 0);
+		printf("Phys addr %08lx\n", phys_addr);
+		qdma_write_bypass_reg_addr(dev, phys_addr);
+		qdma_write_bypass_reg_valid(dev, 1);
+
+        
+		//qdma_reg_write_usr(dev,0x5110,100);
+		//val=qdma_reg_read_usr(dev,0x5110); //low ADDR
+		//printf("CFG VAL: 0x%08x\n", val);
+		
+		
+		sleep(5);
+                //alloca in qdma_dev_rx_queue_start
+		
+		
 		// ret = rte_eth_promiscuous_enable(portid);
 		// if (ret != 0)
 		// 	rte_exit(EXIT_FAILURE,
@@ -1134,6 +1315,12 @@ main(int argc, char **argv)
 	}
 
 	check_all_ports_link_status(cms_enabled_port_mask);
+
+	/* Initialize PCAP file for packet capture */
+	if (dump)
+		if (pcap_file_open("captured_packets.pcap") < 0) {
+			printf("Warning: Could not open PCAP file for writing\n");
+		}
 
 	ret = 0;
 	/* launch per-lcore init on every lcore */
@@ -1176,6 +1363,9 @@ main(int argc, char **argv)
 		printf(" Done\n");
 	}
 	printf("Bye...\n");
+
+	/* Close PCAP file */
+	if (dump) pcap_file_close();
 
 	// free countmin
 	for (int i = 0; i < HASHFN_N; i++) {

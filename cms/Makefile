@@ -39,7 +39,7 @@ build/$(APP)-static: $(SRCS-y) Makefile $(PC_FILE) | build
 
 
 # Local build using DPDK-20.11 source tree
-DPDK_LOCAL_PATH ?= ../../dpdk-20.11
+DPDK_LOCAL_PATH ?= ../..
 DPDK_BUILD ?= $(DPDK_LOCAL_PATH)/build
 
 DPDK_INCLUDES := -I$(DPDK_LOCAL_PATH) -I$(DPDK_BUILD)/include
