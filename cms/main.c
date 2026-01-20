@@ -51,6 +51,27 @@
 #include <sys/types.h>
 #include <time.h>
 
+uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
+int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
+int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
+int qdma_write_bypass_reg_port_id(void *dev_hndl, uint8_t port_id);
+int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid);
+int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func);
+int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
+int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
+
+int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr);
+int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id);
+int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid);
+int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func);
+int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag);
+int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid);
+
+int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
+uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst);
+uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
+void print_phys(struct rte_eth_dev *dev, uint16_t qid);
+
 /* PCAP file format structures */
 typedef struct {
 	uint32_t magic_number;
@@ -145,24 +166,6 @@ pcap_file_close(void)
 		pcap_file = NULL;
 	}
 }
-
-uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
-int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
-int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
-int qdma_write_bypass_reg_port_id(void *dev_hndl, uint8_t port_id);
-int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid);
-int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func);
-int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
-int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
-
-int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr);
-int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id);
-int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid);
-int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func);
-int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag);
-int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid);
-
-int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
 
 
 struct rte_eth_stats stats;
@@ -1273,7 +1276,7 @@ main(int argc, char **argv)
 		//printf("CFG VAL: 0x%08x\n", val);
 		
 		
-		sleep(5);
+		//sleep(5);
                 //alloca in qdma_dev_rx_queue_start
 		
 		
