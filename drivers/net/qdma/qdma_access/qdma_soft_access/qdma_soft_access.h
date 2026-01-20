@@ -300,6 +300,22 @@ int qdma_mm_channel_conf(void *dev_hndl, uint8_t channel, uint8_t is_c2h,
 
 int qdma_dump_reg_info(void *dev_hndl, uint32_t reg_addr,
 			uint32_t num_regs, char *buf, uint32_t buflen);
+int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
+int qdma_write_bypass_reg_port_id(void *dev_hndl, uint8_t port_id);
+int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid);
+int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func);
+int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
+int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
+
+int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr);
+int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id);
+int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid);
+int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func);
+int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag);
+int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid);
+
+int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
+
 
 #ifdef __cplusplus
 }

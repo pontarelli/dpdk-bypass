@@ -38,6 +38,11 @@
 extern "C" {
 #endif
 
+
+
+void print_phys(struct rte_eth_dev *dev, uint16_t qid);
+
+
 /** @defgroup dpdk_devops_func Functions
  */
 

@@ -6164,3 +6164,219 @@ int qdma_dump_reg_info(void *dev_hndl, uint32_t reg_addr,
 
 }
 
+
+int qdma_read_bypass_regs(void *dev_hndl, uint32_t *reg_vals,
+			uint32_t num_regs) {
+	uint32_t i;
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+				__func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!reg_vals) {
+		qdma_log_error("%s: reg_vals is NULL, err:%d\n",
+				__func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (num_regs > QDMA_BYPASS_NUM_REGS) {
+		qdma_log_error("%s: num_regs %u exceeds max %u, err:%d\n",
+				__func__, num_regs, QDMA_BYPASS_REGS_NUM,
+				-QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+
+	/*for (i = 0; i < num_regs; i++) {
+		reg_vals[i] = qdma_reg_read_usr(dev_hndl,
+				qdma_bypass_regs[i]);
+	}*/
+
+	return QDMA_SUCCESS;
+}
+
+
+int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_ADDR_LOWER,
+		(uint32_t)(addr & 0xFFFFFFFF));
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_ADDR_UPPER,
+		(uint32_t)((addr >> 32) & 0xFFFFFFFF));
+	return QDMA_SUCCESS;
+}
+int qdma_write_bypass_reg_port_id(void *dev_hndl, uint8_t port_id) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_PORT_ID,
+		(uint32_t)(port_id & 0xFF));
+	return QDMA_SUCCESS;
+}
+int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_QID,
+		(uint32_t)(qid & 0xFFFF));
+	return QDMA_SUCCESS;
+}
+int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_FUNC,
+		(uint32_t)(func & 0xFF));
+	return QDMA_SUCCESS;
+}
+int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_PFCH_TAG,
+		tag);
+	return QDMA_SUCCESS;
+}
+int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid)	{
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_VALID,
+		(uint32_t)(valid & 0x1));
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr) {
+	uint32_t addr_lo, addr_hi;
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!addr) {
+		qdma_log_error("%s: addr is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	addr_lo = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_ADDR_LOWER);
+	addr_hi = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_ADDR_UPPER);
+	*addr = ((uint64_t)addr_hi << 32) | (uint64_t)addr_lo;
+	return QDMA_SUCCESS;
+}
+int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!port_id) {
+		qdma_log_error("%s: port_id is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*port_id = (uint8_t)(qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_PORT_ID) & 0xFF);
+	return QDMA_SUCCESS;
+}
+int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!qid) {
+		qdma_log_error("%s: qid is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*qid = (uint16_t)(qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_QID) & 0xFFFF);
+	return QDMA_SUCCESS;
+}
+int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!func) {
+		qdma_log_error("%s: func is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*func = (uint8_t)(qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_FUNC) & 0xFF);
+	return QDMA_SUCCESS;
+}
+int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!tag) {
+		qdma_log_error("%s: tag is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*tag = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_PFCH_TAG);
+	return QDMA_SUCCESS;
+}
+int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!valid) {
+		qdma_log_error("%s: valid is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*valid = (uint8_t)(qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_VALID) & 0x1);
+	return QDMA_SUCCESS;
+}
+
+int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!tag) {
+		qdma_log_error("%s: tag is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	// Write QID to MDMA_C2H_PFCH_BYP_QID register
+	qdma_reg_write_usr(dev_hndl,
+		MDMA_C2H_PFCH_BYP_QID,
+		(uint32_t)(qid & 0xFFFF));
+	// Read prefetch tag from MDMA_C2H_PFCH_BYP_TAG register
+	*tag = qdma_reg_read_usr(dev_hndl,
+		MDMA_C2H_PFCH_BYP_TAG);
+	return QDMA_SUCCESS;
+}
+

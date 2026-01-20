@@ -2039,3 +2039,30 @@ void qdma_dev_ops_init(struct rte_eth_dev *dev) {
     dev->tx_descriptor_status = &qdma_dev_tx_descriptor_status;
   }
 }
+
+
+void print_phys(struct rte_eth_dev *dev, uint16_t qid)
+{
+  struct qdma_rx_queue * rxq = (struct qdma_rx_queue *)dev->data->rx_queues[qid];
+       uint64_t old_phys_addr=0;
+  for(int i=0;i<16;i++) {
+               struct rte_mbuf* mb=rxq->sw_ring[i];
+                       uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
+      uint64_t virt_addr= (uint64_t) rte_pktmbuf_mtod(mb, unsigned char *);
+      printf("coda %d: descrittore %d phys_addr=0x%8lx virt_addr=0x%8lx\n",qid,i,phys_addr,virt_addr);
+                       // oppure
+      struct qdma_ul_st_c2h_desc* rx_ring_st = (struct qdma_ul_st_c2h_desc *)rxq->rx_ring;
+                       phys_addr = rx_ring_st[i].dst_addr;
+                       printf("coda %d: descrittore %d phys_addr=0x%8lx \n",qid,i,phys_addr);
+      printf("phys_addr diff =%ld \n",old_phys_addr-phys_addr);
+      old_phys_addr= phys_addr;
+  }
+}
+
+uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx) {
+	struct qdma_rx_queue * rxq = (struct qdma_rx_queue *)dev->data->rx_queues[qid];
+	struct rte_mbuf* mb=rxq->sw_ring[desc_idx];
+	uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
+	uint64_t virt_addr= (uint64_t) rte_pktmbuf_mtod(mb, unsigned char *);
+	return virt_addr;
+}
