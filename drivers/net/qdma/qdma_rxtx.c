@@ -32,6 +32,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_cycles.h>
+#include "net/bnx2x/elink.h"
 #include "qdma.h"
 #include "qdma_access_common.h"
 
@@ -769,6 +770,108 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 }
 
 /* Populate C2H ring with new buffers */
+static int rearm_c2h_ring_bypass(struct qdma_rx_queue *rxq, uint16_t num_desc)
+{
+	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
+	struct rte_mbuf *mb;
+	struct qdma_ul_st_c2h_desc *rx_ring_st =
+			(struct qdma_ul_st_c2h_desc *)rxq->rx_ring;
+	uint16_t mbuf_index = 0;
+	uint16_t id;
+	int rearm_descs;
+
+	id = rxq->q_pidx_info.pidx;
+
+	/* Split the C2H ring updation in two parts.
+	 * First handle till end of ring and then
+	 * handle from beginning of ring, if ring wraps
+	 */
+	if ((id + num_desc) < (rxq->nb_rx_desc - 1))
+		rearm_descs = num_desc;
+	else
+		rearm_descs = (rxq->nb_rx_desc - 1) - id;
+
+	/* allocate new buffer */
+	//if (rte_mempool_get_bulk(rxq->mb_pool, (void *)&rxq->sw_ring[id],
+	//				rearm_descs) != 0){
+	//	PMD_DRV_LOG(ERR, "%s(): %d: No MBUFS, queue id = %d,"
+	//	"mbuf_avail_count = %d,"
+	//	" mbuf_in_use_count = %d, num_desc_req = %d\n",
+	//	__func__, __LINE__, rxq->queue_id,
+	//	rte_mempool_avail_count(rxq->mb_pool),
+	//	rte_mempool_in_use_count(rxq->mb_pool), rearm_descs);
+	//	return -1;
+	//}
+	// Do not allocate new buffer, use existing mbufs in bypass mode
+
+	//for (mbuf_index = 0; mbuf_index < rearm_descs;
+	//		mbuf_index++, id++) {
+	//	mb = rxq->sw_ring[id];
+	//	mb->data_off = RTE_PKTMBUF_HEADROOM;
+
+	//	/* rearm descriptor */
+	//	rx_ring_st[id].dst_addr =
+	//			(uint64_t)mb->buf_iova +
+	//				RTE_PKTMBUF_HEADROOM;
+	//}
+
+	if (unlikely(id >= (rxq->nb_rx_desc - 1)))
+		id -= (rxq->nb_rx_desc - 1);
+
+	/* Handle from beginning of ring, if ring wrapped */
+	rearm_descs = num_desc - rearm_descs;
+	//if (unlikely(rearm_descs)) {
+	//	/* allocate new buffer */
+	//	if (rte_mempool_get_bulk(rxq->mb_pool,
+	//		(void *)&rxq->sw_ring[id], rearm_descs) != 0) {
+	//		PMD_DRV_LOG(ERR, "%s(): %d: No MBUFS, queue id = %d,"
+	//		"mbuf_avail_count = %d,"
+	//		" mbuf_in_use_count = %d, num_desc_req = %d\n",
+	//		__func__, __LINE__, rxq->queue_id,
+	//		rte_mempool_avail_count(rxq->mb_pool),
+	//		rte_mempool_in_use_count(rxq->mb_pool), rearm_descs);
+
+	//		rxq->q_pidx_info.pidx = id;
+	//		qdma_dev->hw_access->qdma_queue_pidx_update(rxq->dev,
+	//			qdma_dev->is_vf,
+	//			rxq->queue_id, 1, &rxq->q_pidx_info);
+
+	//		return -1;
+	//	}
+
+	//	for (mbuf_index = 0;
+	//			mbuf_index < ((uint16_t)rearm_descs & 0xFFFF);
+	//			mbuf_index++, id++) {
+	//		mb = rxq->sw_ring[id];
+	//		mb->data_off = RTE_PKTMBUF_HEADROOM;
+
+	//		/* rearm descriptor */
+	//		rx_ring_st[id].dst_addr =
+	//				(uint64_t)mb->buf_iova +
+	//					RTE_PKTMBUF_HEADROOM;
+	//	}
+	//}
+
+	PMD_DRV_LOG(DEBUG, "%s(): %d: PIDX Update: queue id = %d, "
+				"num_desc = %d",
+				__func__, __LINE__, rxq->queue_id,
+				num_desc);
+
+	/* Make sure writes to the C2H descriptors are
+	 * synchronized before updating PIDX
+	 */
+	//rte_wmb();
+
+	rxq->q_pidx_info.pidx = id;
+	qdma_dev->hw_access->qdma_queue_pidx_update(rxq->dev,
+		qdma_dev->is_vf,
+		rxq->queue_id, 1, &rxq->q_pidx_info);
+
+	return 0;
+}
+
+
+/* Populate C2H ring with new buffers */
 static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
 {
 	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
@@ -960,8 +1063,13 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	/* Batch the PIDX updates, this minimizes overhead on
 	 * descriptor engine
 	 */
-	if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD)
-		rearm_c2h_ring(rxq, pending_desc);
+	if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD) {
+		// If the bypass mode is enabled, use the bypass rearm function
+		if (rxq->en_bypass && rxq->en_bypass_prefetch)
+			rearm_c2h_ring_bypass(rxq, pending_desc);
+		else
+			rearm_c2h_ring(rxq, pending_desc);
+	}
 
 #ifdef DUMP_MEMPOOL_USAGE_STATS
 	PMD_DRV_LOG(DEBUG, "%s(): %d: queue id = %d, mbuf_avail_count = %d,"
