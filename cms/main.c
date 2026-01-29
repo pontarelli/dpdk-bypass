@@ -589,7 +589,10 @@ static void cms_main_loop(void) {
           total++;
           count_add(m);
           //cms_simple_forward(m, portid);
-          // rte_pktmbuf_free(m);
+          
+          if (!bypass)
+            rte_pktmbuf_free(m);
+          
           if (after_warmup) {
             measured_packets_rx2++;
           }

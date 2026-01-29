@@ -1,4 +1,3 @@
-1. bug su coda senza bypass: riceve solo 8191 pacchetti
+1. testare multi queue
 
-2. cambiare rearm/refill 
 
