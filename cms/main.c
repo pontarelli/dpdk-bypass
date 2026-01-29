@@ -479,7 +479,6 @@ static void cms_main_loop(void) {
   uint64_t start_time = rte_rdtsc();
   uint64_t warmup_time = 3 * rte_get_timer_hz();
   uint64_t stop_time = (1000 * rte_get_timer_hz()) + warmup_time;
-  uint64_t total=0;
   while (!force_quit) {
 
     cur_tsc = rte_rdtsc();
@@ -575,7 +574,7 @@ static void cms_main_loop(void) {
           }
 
           /* Write packet to PCAP file */
-	  struct rte_eth_dev *dev = &rte_eth_devices[0];
+	        struct rte_eth_dev *dev = &rte_eth_devices[0];
           if (pcap_file != NULL) {
             uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
             //printf("Packet data address (%ld): %p --", total,pkt_data);
@@ -999,6 +998,7 @@ int main(int argc, char **argv) {
   unsigned nb_ports_in_mask = 0;
   unsigned int nb_lcores = 0;
   unsigned int nb_mbufs;
+  uint32_t prefetch_tag;
 
   setlocale(LC_NUMERIC, ""); // Usa locale di sistema per i separatori
 
@@ -1226,7 +1226,6 @@ int main(int argc, char **argv) {
                                        0); // RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2,
         // Size 0 indicates internal mode descriptor size.
         // Write to MDMA_C2H_PFCH_BYP_QID 0x1408 with valid qid.
-        uint32_t prefetch_tag;
         if (qdma_bypass_reg_get_prefetch_tag(dev, 0, &prefetch_tag)) {
           printf("error reading prefetch tag\n");
           return -1;
@@ -1292,26 +1291,16 @@ int main(int argc, char **argv) {
       printf("Phys addr %08lx\n", phys_addr);
       qdma_write_bypass_reg_addr(dev, phys_addr);
       qdma_write_bypass_reg_num_desc(dev, nb_rxd);
+      //qdma_write_bypass_reg_pfch_tag(dev,prefetch_tag);
       qdma_write_bypass_reg_valid(dev, 0);
       qdma_write_bypass_reg_valid(dev, 1);
 
       val=qdma_reg_read_usr(dev, 0x512C); //pkt_counter
       printf("PKT COUNTER VAL: %d\n", val);
     }
-    //sleep(3);
-
-    // qdma_reg_write_usr(dev,0x5110,100);
-    // val=qdma_reg_read_usr(dev,0x5110); //low ADDR
-    // printf("CFG VAL: 0x%08x\n", val);
-
-    // sleep(5);
-    // alloca in qdma_dev_rx_queue_start
-
-    // ret = rte_eth_promiscuous_enable(portid);
-    // if (ret != 0)
-    // 	rte_exit(EXIT_FAILURE,
-    // 		 "rte_eth_promiscuous_enable:err=%s, port=%u\n",
-    // 		 rte_strerror(-ret), portid);
+    else {
+      qdma_write_bypass_reg_valid(dev, 0);
+    }
 
     printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
            cms_ports_eth_addr[portid].addr_bytes[0],
@@ -1361,6 +1350,8 @@ int main(int argc, char **argv) {
       break;
     }
   }
+  
+  printf("packets: %u\n", total);
   printf("RX packets: %" PRIu64 "\n", stats.ipackets);
   printf("TX packets: %" PRIu64 "\n", stats.opackets);
   printf("RX dropped: %" PRIu64 "\n", stats.imissed);
