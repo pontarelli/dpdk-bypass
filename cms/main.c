@@ -461,7 +461,8 @@ static void cms_main_loop(void) {
 
   lcore_id = rte_lcore_id();
   qconf = &lcore_queue_conf[lcore_id];
-
+  struct rte_eth_dev *dev = &rte_eth_devices[0];
+				    
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, CMS, "lcore %u has nothing to do\n", lcore_id);
     return;
@@ -522,102 +523,109 @@ static void cms_main_loop(void) {
     /*
      * Read packet from RX queues
      */
-    int max_loops = 100000;
-    for (i = 0; i < qconf->n_rx_port; i++) {
-      portid = qconf->rx_port_list[i];
-      for (int q = 0; q < cms_rx_queue_per_lcore; q++) {
-        nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
+    int max_loops = 100;
+    for (int l = 0; l < 100; l++)
+	    for (i = 0; i < qconf->n_rx_port; i++) {
+		    portid = qconf->rx_port_list[i];
+		    for (int q = 0; q < cms_rx_queue_per_lcore; q++) {
+			    nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
-        port_statistics[portid][q].rx += nb_rx;
+			    port_statistics[portid][q].rx += nb_rx;
 
-        struct rte_ether_hdr *eth;
-        for (j = 0; j < nb_rx; j++) {
-          
-          /*printf("primo:\n");
-          for (size_t i = 0; i < 32; i++) {
-            printf("%X ", *(((uint8_t *)phys_addr) + i));
-          }
-          printf("\n");
-          
-          printf("secondo:\n");
-          for (size_t i = 0; i < 32; i++) {
-            printf("%X ", *(((uint8_t *)phys_addr) -2368+ i));
-          }
-          printf("\n");
-          
-          printf("terzo:\n");
-          for (size_t i = 0; i < 32; i++) {
-            printf("%X ", *(((uint8_t *)phys_addr) -2*2368+ i));
-          }
-          printf("\n");
-          
-          printf("i-esimo:\n");
-          for (size_t i = 0; i < 32; i++) {
-            printf("%X ", *(((uint8_t *)phys_addr) -(total %128)*2368+ i));
-          }
-          printf("\n");
-          
-          printf("cinquanta:\n");
-          for (size_t i = 0; i < 32; i++) {
-            printf("%X ", *(((uint8_t *)phys_addr) -50*2368+ i));
-          }
-          printf("\n");
-          */
+			    struct rte_ether_hdr *eth;
+			    for (j = 0; j < nb_rx; j++) {
 
-          // printf("lcore %u: port %u, queue %d, packet %d\n", lcore_id,
-          // portid, q, j);
-          m = pkts_burst[j];
-          // rte_prefetch0(rte_pktmbuf_mtod(m, void *));
-          if ((prefetch_distance > 0) && (j + prefetch_distance < nb_rx)) {
-            rte_prefetch0(
-                rte_pktmbuf_mtod(pkts_burst[j + prefetch_distance], void *));
+				    /*printf("primo:\n");
+				      for (size_t i = 0; i < 32; i++) {
+				      printf("%X ", *(((uint8_t *)phys_addr) + i));
+				      }
+				      printf("\n");
+
+				      printf("secondo:\n");
+				      for (size_t i = 0; i < 32; i++) {
+				      printf("%X ", *(((uint8_t *)phys_addr) -2368+ i));
+				      }
+				      printf("\n");
+
+				      printf("terzo:\n");
+				      for (size_t i = 0; i < 32; i++) {
+				      printf("%X ", *(((uint8_t *)phys_addr) -2*2368+ i));
+				      }
+				      printf("\n");
+
+				      printf("i-esimo:\n");
+				      for (size_t i = 0; i < 32; i++) {
+				      printf("%X ", *(((uint8_t *)phys_addr) -(total %128)*2368+ i));
+				      }
+				      printf("\n");
+
+				      printf("cinquanta:\n");
+				      for (size_t i = 0; i < 32; i++) {
+				      printf("%X ", *(((uint8_t *)phys_addr) -50*2368+ i));
+				      }
+				      printf("\n");
+				      */
+
+				    // printf("lcore %u: port %u, queue %d, packet %d\n", lcore_id,
+				    // portid, q, j);
+				    m = pkts_burst[j];
+				    // rte_prefetch0(rte_pktmbuf_mtod(m, void *));
+				    if ((prefetch_distance > 0) && (j + prefetch_distance < nb_rx)) {
+					    rte_prefetch0(
+							    rte_pktmbuf_mtod(pkts_burst[j + prefetch_distance], void *));
+				    }
+
+				    /* Write packet to PCAP file */
+				    if (pcap_file != NULL) {
+					    uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
+					    //printf("Packet data address (%ld): %p --", total,pkt_data);
+					    uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
+					    //printf("Packet data: %c%c%c%c\n",pkt_data[pkt_len-4],pkt_data[pkt_len-3],pkt_data[pkt_len-2],pkt_data[pkt_len-1]);
+					    pcap_write_packet(pkt_data, pkt_len);
+				    }
+				    /*if (total %63 == 62) {
+				      qdma_write_bypass_reg_valid(dev, 0);
+				      qdma_write_bypass_reg_valid(dev, 1);
+				      }*/
+				    total++;
+				    //count_add(m);
+				    //cms_simple_forward(m, portid);
+
+				    if (!bypass)
+					    rte_pktmbuf_free(m);
+
+				    if (after_warmup) {
+					    measured_packets_rx2++;
+				    }
+			    }
+			    // rearm!
+			    if (bypass) {
+            rearm_c2h_ring_bypass(dev->data->rx_queues[q]);
           }
 
-          /* Write packet to PCAP file */
-	        struct rte_eth_dev *dev = &rte_eth_devices[0];
-          if (pcap_file != NULL) {
-            uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
-            //printf("Packet data address (%ld): %p --", total,pkt_data);
-            uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
-            //printf("Packet data: %c%c%c%c\n",pkt_data[pkt_len-4],pkt_data[pkt_len-3],pkt_data[pkt_len-2],pkt_data[pkt_len-1]);
-            pcap_write_packet(pkt_data, pkt_len);
-          }
-	  /*if (total %63 == 62) {
-		  qdma_write_bypass_reg_valid(dev, 0);
-		  qdma_write_bypass_reg_valid(dev, 1);
-	  }*/
-          total++;
-          count_add(m);
-          //cms_simple_forward(m, portid);
-          
-          if (!bypass)
-            rte_pktmbuf_free(m);
-          
-          if (after_warmup) {
-            measured_packets_rx2++;
-          }
-        }
-        // rearm!
-        //rxq->q_pidx_info.pidx = id;
-        //qdma_dev->hw_access->qdma_queue_pidx_update(
-        //    rxq->dev, qdma_dev->is_vf, rxq->queue_id, 1, &rxq->q_pidx_info);
+          //rxq->q_pidx_info.pidx = id;
+			    //qdma_dev->hw_access->qdma_queue_pidx_update(
+			    //    rxq->dev, qdma_dev->is_vf, rxq->queue_id, 1, &rxq->q_pidx_info);
 
-        if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
-          q--; // if we got MAX_PKT_BURST packets, we need to process them again
-          max_loops--;
-        }
-        if (nb_rx < MAX_PKT_BURST) {
-          spin_time++;
-        }
-        if (nb_rx == 0) {
-          empty++;
-        }
-        // fare così mi riduce le prestazioni di 1mpps
-        //  if (after_warmup) {
-        //  	measured_packets_rx3 += nb_rx;
-        //  }
-      }
-    }
+			    if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
+				    q--; // if we got MAX_PKT_BURST packets, we need to process them again
+				    max_loops--;
+			    }
+			    else 
+				    max_loops = 100;
+
+			    if (nb_rx < MAX_PKT_BURST) {
+				    spin_time++;
+			    }
+			    if (nb_rx == 0) {
+				    empty++;
+			    }
+			    // fare così mi riduce le prestazioni di 1mpps
+			    //  if (after_warmup) {
+			    //  	measured_packets_rx3 += nb_rx;
+			    //  }
+		    }
+	    }
     // if ((cur_tsc - start_time) > stop_time) { // 13 seconds) {
     //	end_time = cur_tsc - end_warmup;
     //	break;
@@ -1143,9 +1151,9 @@ int main(int argc, char **argv) {
     struct rte_eth_dev *dev = &rte_eth_devices[port_id];
     
     //qdma_reg_write_usr(dev,0x000C,1); //QDMA reset
-    //rte_delay_ms(1000);
-    //qdma_reg_write_usr(dev,0x000C,0); //QDMA reset
-    //rte_delay_ms(1000);
+    //qdma_reg_write_usr(dev,0x000C,2); //CMAC0 reset
+    //qdma_reg_write_usr(dev,0x000C,4); //CMAC1 reset
+    //rte_delay_ms(5000);
 
     // local_port_conf.rxmode.mq_mode              = ETH_MQ_RX_RSS;
     // local_port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
