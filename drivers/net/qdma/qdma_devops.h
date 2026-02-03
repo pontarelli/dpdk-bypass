@@ -39,7 +39,7 @@ extern "C" {
 #endif
 
 
-
+uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
 
 
