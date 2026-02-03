@@ -44,5 +44,6 @@ struct qdma_ul_mm_desc *get_mm_h2c_desc(void *queue_hndl);
 uint32_t get_mm_c2h_ep_addr(void *queue_hndl);
 uint32_t get_mm_h2c_ep_addr(void *queue_hndl);
 uint32_t get_mm_buff_size(void *queue_hndl);
+int rearm_c2h_ring_bypass(void* rxq);
 
 #endif /* QDMA_DPDK_RXTX_H_ */

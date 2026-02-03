@@ -779,8 +779,9 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 
 /* Populate C2H ring with new buffers */
 //static 
-int rearm_c2h_ring_bypass(struct qdma_rx_queue *rxq)
+int rearm_c2h_ring_bypass(void *rxqueue)
 {
+	struct qdma_rx_queue* rxq = (struct qdma_rx_queue*)rxqueue;
 	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
 	/*uint16_t id;
 	
