@@ -206,32 +206,59 @@ int qdma_init_rx_queue(struct qdma_rx_queue *rxq)
 				rte_mempool_avail_count(rxq->mb_pool),
 				rte_mempool_in_use_count(rxq->mb_pool));
 #endif //DUMP_MEMPOOL_USAGE_STATS
-		for (i = 0; i < (rxq->nb_rx_desc - 2); i++) {
-			if (rte_mempool_get(rxq->mb_pool, &obj) != 0) {
-				PMD_DRV_LOG(ERR, "qdma-start-rx-queue(): "
-						"rte_mempool_get: failed");
-				printf("%s(): %d: qid %d, rte_mempool_get failed\n",
-				__func__, __LINE__, rxq->queue_id);
+       		
+		if (rxq->en_bypass && rxq->en_bypass_prefetch) {
+			struct rte_mbuf* mb_ar[2048];
+			if (rte_mempool_get_bulk(rxq->mb_pool, (void*)mb_ar,(rxq->nb_rx_desc - 1)) != 0){
+				PMD_DRV_LOG(ERR, "%s(): %d: No MBUFS, queue id = %d,"
+				"mbuf_avail_count = %d,"
+				" mbuf_in_use_count = %d, num_desc_req = %d\n",
+				__func__, __LINE__, rxq->queue_id,
+				rte_mempool_avail_count(rxq->mb_pool),
+				rte_mempool_in_use_count(rxq->mb_pool), rxq->nb_rx_desc - 1);
 				goto fail;
 			}
-
-			if (obj != NULL)
-				mb = obj;
-			else {
-				PMD_DRV_LOG(ERR, "%s(): %d: qid %d, rte_mempool_get failed",
-				__func__, __LINE__, rxq->queue_id);
-				printf("%s(): %d: qid %d, rte_mempool_get failed\n",
-				__func__, __LINE__, rxq->queue_id);
-				goto fail;
-			}
-
-			phys_addr = (uint64_t)mb->buf_iova +
-				     RTE_PKTMBUF_HEADROOM;
-
-			mb->data_off = RTE_PKTMBUF_HEADROOM;
-			rxq->sw_ring[i] = mb;
-			rx_ring_st[i].dst_addr = phys_addr;
+			for (i = 0; i < (rxq->nb_rx_desc - 1); i++) {
+				mb = mb_ar[i];
+				phys_addr = (uint64_t)mb->buf_iova +
+					     RTE_PKTMBUF_HEADROOM;
+				mb->data_off = RTE_PKTMBUF_HEADROOM;
+				rxq->sw_ring[i] = mb;
+				rx_ring_st[i].dst_addr = phys_addr;
+			}		 
 		}
+		else {
+			for (i = 0; i < (rxq->nb_rx_desc - 2); i++) {
+				if (rte_mempool_get(rxq->mb_pool, &obj) != 0) {
+					PMD_DRV_LOG(ERR, "qdma-start-rx-queue(): "
+							"rte_mempool_get: failed");
+					printf("%s(): %d: qid %d, rte_mempool_get failed\n",
+					__func__, __LINE__, rxq->queue_id);
+					goto fail;
+				}
+
+				if (obj != NULL)
+					mb = obj;
+				else {
+					PMD_DRV_LOG(ERR, "%s(): %d: qid %d, rte_mempool_get failed",
+					__func__, __LINE__, rxq->queue_id);
+					printf("%s(): %d: qid %d, rte_mempool_get failed\n",
+					__func__, __LINE__, rxq->queue_id);
+					goto fail;
+				}
+
+				phys_addr = (uint64_t)mb->buf_iova +
+					     RTE_PKTMBUF_HEADROOM;
+
+				mb->data_off = RTE_PKTMBUF_HEADROOM;
+				rxq->sw_ring[i] = mb;
+				rx_ring_st[i].dst_addr = phys_addr;
+			}
+		}
+		
+	
+
+
 #ifdef DUMP_MEMPOOL_USAGE_STATS
 		PMD_DRV_LOG(INFO, "%s(): %d: qid %d, mbuf_avail_count = %d,"
 				"mbuf_in_use_count = %d",
