@@ -1291,23 +1291,27 @@ int qdma_dev_configure(struct rte_eth_dev *dev) {
   int ret = 0, queue_base = -1;
   uint8_t stat_id;
 
-  uint32_t r = qdma_reg_read_usr(dev, 0x2000);
-  printf("qdma_reg_read returned %x\n", r);
-  // 3 code per ogni porta
-  //  qdma_reg_write_usr(dev,0x1000,0x3);
-  //  qdma_reg_write_usr(dev,0x2000,0x00030003);
-  qdma_reg_write_usr(dev, 0x1000, 0x1);
-  qdma_reg_write_usr(dev, 0x2000, 0x00010001);
+  // set TX queues
+  uint32_t val =  dev->data->nb_tx_queues & 0x0000FFFF;
+  qdma_reg_write_usr(dev, 0x1000, val);
+  
+  //with 2 PFs 
+  if (qdma_dev->dev_cap.num_pfs==2) {
+    uint32_t r = qdma_reg_read_usr(dev, 0x2000);
+    printf("qdma_reg_read returned %x\n", r);
+    val = (val << 16) + (dev->data->nb_tx_queues & 0x0000FFFF);
+    qdma_reg_write_usr(dev, 0x2000, val);
+  }
   // qdma_reg_write_usr(dev, 0x1000, 0x40);
-  // qdma_reg_write_usr(dev, 0x2000, 0x00400040);
   qdma_reg_write_usr(dev, 0x8014, 0x1);
   qdma_reg_write_usr(dev, 0x800c, 0x1);
   qdma_reg_write_usr(dev, 0xC014, 0x1);
   qdma_reg_write_usr(dev, 0xC00c, 0x1);
 
-  r = qdma_reg_read_usr(dev, 0x2000);
-  printf("qdma_reg_read returned dopo %x\n", r);
-
+  if (qdma_dev->dev_cap.num_pfs==2) {
+    uint32_t r = qdma_reg_read_usr(dev, 0x2000);
+    printf("qdma_reg_read returned dopo %x\n", r);
+  }
   PMD_DRV_LOG(INFO, "Configure the qdma engines\n");
   printf("scrivendo nb_rx_queues %d nb_tx_queues %d\n", dev->data->nb_rx_queues,
          dev->data->nb_tx_queues);
@@ -1978,7 +1982,7 @@ static int qdma_dev_reta_query(struct rte_eth_dev *dev,
 static int qdma_dev_reta_update(struct rte_eth_dev *dev,
                                 struct rte_eth_rss_reta_entry64 *reta_conf,
                                 uint16_t reta_size) {
-  uint32_t qval, nrxq;
+  uint32_t nrxq;
   uint32_t addr;
   struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
 
@@ -2045,16 +2049,19 @@ void print_phys(struct rte_eth_dev *dev, uint16_t qid)
 {
   struct qdma_rx_queue * rxq = (struct qdma_rx_queue *)dev->data->rx_queues[qid];
        uint64_t old_phys_addr=0;
-  for(int i=0;i<16;i++) {
-               struct rte_mbuf* mb=rxq->sw_ring[i];
+  for(int i=0;i<2048;i++) {
+      if (rxq->sw_ring[i]==NULL) break;         
+      struct rte_mbuf* mb=rxq->sw_ring[i];
                        uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
-      uint64_t virt_addr= (uint64_t) rte_pktmbuf_mtod(mb, unsigned char *);
-      printf("coda %d: descrittore %d phys_addr=0x%8lx virt_addr=0x%8lx\n",qid,i,phys_addr,virt_addr);
+      //uint64_t virt_addr= (uint64_t) rte_pktmbuf_mtod(mb, unsigned char *);
+      //printf("coda %d: descrittore %d phys_addr=0x%8lx virt_addr=0x%8lx\n",qid,i,phys_addr,virt_addr);
                        // oppure
       struct qdma_ul_st_c2h_desc* rx_ring_st = (struct qdma_ul_st_c2h_desc *)rxq->rx_ring;
-                       phys_addr = rx_ring_st[i].dst_addr;
-                       printf("coda %d: descrittore %d phys_addr=0x%8lx \n",qid,i,phys_addr);
-      printf("phys_addr diff =%ld \n",old_phys_addr-phys_addr);
+      phys_addr = rx_ring_st[i].dst_addr;
+      //printf("coda %d: descrittore %d phys_addr=0x%8lx \n",qid,i,phys_addr);
+      int64_t diff= phys_addr-old_phys_addr;
+      if (diff!=2368 && i>0)
+        printf("desc=%d phys_addr=0x%8lx diff =%ld 0x%lx\n",i,phys_addr,-diff,-diff);
       old_phys_addr= phys_addr;
   }
 }
@@ -2062,7 +2069,7 @@ void print_phys(struct rte_eth_dev *dev, uint16_t qid)
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx) {
 	struct qdma_rx_queue * rxq = (struct qdma_rx_queue *)dev->data->rx_queues[qid];
 	struct rte_mbuf* mb=rxq->sw_ring[desc_idx];
-	uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
+	//uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
 	uint64_t virt_addr= (uint64_t) rte_pktmbuf_mtod(mb, unsigned char *);
 	return virt_addr;
 }
