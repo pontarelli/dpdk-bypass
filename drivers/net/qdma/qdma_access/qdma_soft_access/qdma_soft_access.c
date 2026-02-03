@@ -31,6 +31,7 @@
  */
 
 #include "qdma_soft_access.h"
+#include "qdma_platform.h"
 #include "qdma_soft_reg.h"
 #include "qdma_reg_dump.h"
 
@@ -6264,6 +6265,44 @@ int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid)	{
 	return QDMA_SUCCESS;
 }
 
+int qdma_write_bypass_reg_num_desc(void *dev_hndl, uint32_t num_desc) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_NUM_DESC,
+		num_desc);
+	return QDMA_SUCCESS;
+}
+
+int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc) {
+
+	// Use the qid as the page index 
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+		(uint32_t)(qid & 0xFFFF));
+
+	// Write the address
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE,
+		(uint32_t)(addr & 0xFFFFFFFF));
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE + 4,
+		(uint32_t)((addr >> 32) & 0xFFFFFFFF));
+	// Write num desc
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE + 8,
+		num_desc);
+	// Write tag and valid
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE + 12,
+		valid ? (tag | (0x1 << 7)) : (tag & ~(0x1 << 7)));
+
+	return QDMA_SUCCESS;
+}
+
 int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr) {
 	uint32_t addr_lo, addr_hi;
 	if (!dev_hndl) {
@@ -6359,6 +6398,143 @@ int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid) {
 	return QDMA_SUCCESS;
 }
 
+int qdma_read_bypass_reg_num_desc(void *dev_hndl, uint32_t *num_desc) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!num_desc) {
+		qdma_log_error("%s: num_desc is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*num_desc = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_NUM_DESC);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_dest_addr_lower(void *dev_hndl, uint32_t *addr_lower) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!addr_lower) {
+		qdma_log_error("%s: addr_lower is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*addr_lower = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_DEST_ADDR_LOWER);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_dest_addr_upper(void *dev_hndl, uint32_t *addr_upper) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!addr_upper) {
+		qdma_log_error("%s: addr_upper is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*addr_upper = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_DEST_ADDR_UPPER);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_dest_addr(void *dev_hndl, uint64_t *addr) {
+	uint32_t addr_lo, addr_hi;
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!addr) {
+		qdma_log_error("%s: addr is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	addr_lo = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_DEST_ADDR_LOWER);
+	addr_hi = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_DEST_ADDR_UPPER);
+	*addr = ((uint64_t)addr_hi << 32) | (uint64_t)addr_lo;
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_mult_lower(void *dev_hndl, uint32_t *mult_lower) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!mult_lower) {
+		qdma_log_error("%s: mult_lower is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*mult_lower = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_MULT_LOWER);
+	return QDMA_SUCCESS;
+}
+
+
+int qdma_read_bypass_reg_mult_upper(void *dev_hndl, uint32_t *mult_upper) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!mult_upper) {
+		qdma_log_error("%s: mult_upper is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*mult_upper = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_MULT_UPPER);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_mult(void *dev_hndl, uint64_t *addr) {
+	uint32_t mult_lo, mult_hi;
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!addr) {
+		qdma_log_error("%s: addr is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	mult_lo = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_MULT_LOWER);
+	mult_hi = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_MULT_UPPER);
+	*addr = ((uint64_t)mult_hi << 32) | (uint64_t)mult_lo;
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_module_id(void *dev_hndl, uint32_t *module_id) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!module_id) {
+		qdma_log_error("%s: module_id is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*module_id = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_MODULE_ID);
+	return QDMA_SUCCESS;
+}
+
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag) {
 	if (!dev_hndl) {
 		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
@@ -6380,3 +6556,36 @@ int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag
 	return QDMA_SUCCESS;
 }
 
+int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *addr, uint32_t *tag, uint8_t *valid, uint32_t *num_desc) {
+	// Use the qid as the page index
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+		(uint32_t)(qid & 0xFFFF));
+
+	// Read the address
+	if (addr) {
+		uint32_t addr_lo = qdma_reg_read_usr(dev_hndl,
+			QDMA_BYPASS_REG_TABLE);
+		uint32_t addr_hi = qdma_reg_read_usr(dev_hndl,
+			QDMA_BYPASS_REG_TABLE + 4);
+		*addr = ((uint64_t)addr_hi << 32) | (uint64_t)addr_lo;
+	}
+
+	// Read num desc
+	if (num_desc) {
+		*num_desc = qdma_reg_read_usr(dev_hndl,
+			QDMA_BYPASS_REG_TABLE + 8);
+	}
+
+	// Read tag and valid
+	if (tag || valid) {
+		uint32_t tag_valid = qdma_reg_read_usr(dev_hndl,
+			QDMA_BYPASS_REG_TABLE + 12);
+		if (tag)
+			*tag = tag_valid & 0x7F; // bits [6:0] is tag
+		if (valid)
+			*valid = (tag_valid >> 7) & 0x1; // bit 7 is valid
+	}
+
+	return QDMA_SUCCESS;
+}

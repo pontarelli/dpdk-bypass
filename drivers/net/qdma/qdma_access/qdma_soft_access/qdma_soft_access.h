@@ -306,13 +306,27 @@ int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid);
 int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func);
 int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
 int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
-
+int qdma_write_bypass_reg_num_desc(void *dev_hndl, uint32_t num_desc);
+int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid,
+                                      uint64_t addr, uint32_t tag,
+                                      uint8_t valid, uint32_t num_desc);
 int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr);
 int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id);
 int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid);
 int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func);
 int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag);
 int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid);
+int qdma_read_bypass_reg_num_desc(void *dev_hndl, uint32_t *num_desc);
+int qdma_read_bypass_reg_dest_addr_lower(void *dev_hndl, uint32_t *addr_lower);
+int qdma_read_bypass_reg_dest_addr_upper(void *dev_hndl, uint32_t *addr_upper);
+int qdma_read_bypass_reg_dest_addr(void *dev_hndl, uint64_t *addr);
+int qdma_read_bypass_reg_mult_lower(void *dev_hndl, uint32_t *mult_lower);
+int qdma_read_bypass_reg_mult_upper(void *dev_hndl, uint32_t *mult_upper);
+int qdma_read_bypass_reg_mult(void *dev_hndl, uint64_t *addr);
+int qdma_read_bypass_reg_module_id(void *dev_hndl, uint32_t *module_id);
+int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid,
+									  uint64_t *addr, uint32_t *tag,
+									  uint8_t *valid, uint32_t *num_desc);
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
 
