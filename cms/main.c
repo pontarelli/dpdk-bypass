@@ -64,6 +64,7 @@ int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
 uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst);
 uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
 void qdma_reg_write_usr(void *dev_hndl, uint32_t reg_offst, uint32_t val);
+int rearm_c2h_ring_bypass(void* rxq);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
 
 /* PCAP file format structures */
@@ -600,7 +601,7 @@ static void cms_main_loop(void) {
 			    }
 			    // rearm!
 			    if (bypass) {
-            rearm_c2h_ring_bypass(dev->data->rx_queues[q]);
+            rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
           }
 
           //rxq->q_pidx_info.pidx = id;
