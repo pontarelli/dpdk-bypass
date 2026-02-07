@@ -712,7 +712,7 @@ static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
 }
 
 /* Prepare mbuf for one packet */
-static inline
+/*static inline
 struct rte_mbuf *prepare_single_packet(struct qdma_rx_queue *rxq,
 		uint16_t cmpt_idx)
 {
@@ -752,7 +752,7 @@ struct rte_mbuf *prepare_single_packet(struct qdma_rx_queue *rxq,
 	}
 	return mb;
 }
-
+*/
 /* Prepare mbufs with packet information */
 static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 			struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
@@ -806,10 +806,15 @@ int rearm_c2h_ring_bypass(void *rxqueue)
 	/* Make sure writes to the C2H descriptors are
 	 * synchronized before updating PIDX
 	 */
-	//rte_wmb();
+	//printf("%s(): %d: PIDX Update: queue id = %d, pidx=%d tail = %d \n",
+	//			__func__, __LINE__, rxq->queue_id,	rxq->q_pidx_info.pidx, rxq->rx_tail);
+    rte_wmb();
 
 	//rxq->q_pidx_info.pidx = id;
 	rxq->q_pidx_info.pidx= rxq->rx_tail - 1;
+	if (rxq->rx_tail < 1)
+		rxq->q_pidx_info.pidx = (rxq->nb_rx_desc + rxq->rx_tail) - 2;
+
 	qdma_dev->hw_access->qdma_queue_pidx_update(rxq->dev,
 		qdma_dev->is_vf,
 		rxq->queue_id, 1, &rxq->q_pidx_info);
