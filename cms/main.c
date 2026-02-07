@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2016 Intel Corporation
  */
 
+#include "drivers/net/ark/ark_mpu.h"
 #include "rte_pmd_qdma.h"
 #include "xxhash64.h"
 #include <errno.h>
@@ -38,6 +39,7 @@
 #include <sys/queue.h>
 #include <sys/types.h>
 #include <time.h>
+#define abs(x) ((x) < 0 ? -(x) : (x))
 
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
@@ -66,6 +68,7 @@ uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
 void qdma_reg_write_usr(void *dev_hndl, uint32_t reg_offst, uint32_t val);
 int rearm_c2h_ring_bypass(void* rxq);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
+struct rte_eth_dev *dev=NULL;
 
 /* PCAP file format structures */
 typedef struct {
@@ -168,9 +171,11 @@ struct countmin {
 struct countmin *cm;
 
 static volatile bool force_quit;
+static volatile bool force_rearm = false;
 bool silent = false;
 bool dump = false;
 bool bypass = false;
+bool debug = false;
 uint64_t phys_addr;
 
 /* MAC updating enabled by default */
@@ -343,6 +348,24 @@ static void print_stats(void) {
     printf("With aggressive policy\n");
   else
     printf("Without aggressive policy\n");
+  if (bypass)
+    printf("With bypass\n");
+  else
+    printf("Without bypass\n");
+  if (debug)
+    printf("With debug\n");
+  else
+    printf("Without debug\n");
+  
+  
+  uint32_t val_l = qdma_reg_read_usr(dev,0xB020);
+  uint32_t val_h = qdma_reg_read_usr(dev,0xB024);
+  uint64_t rx_pkt = ((uint64_t)val_h <<32) | val_l;
+  printf("Packet Adapter received packets: %ld\n", rx_pkt);  
+  uint32_t rx_pkt2 = qdma_reg_read_usr(dev,0x512C);
+  printf("QDMA Subsystem received packets: %d\n", rx_pkt2);  
+  printf("diff: %u\n", rx_pkt-rx_pkt2);    
+  
   printf("prefetch distance: %u\n", prefetch_distance);
   printf("\n====================================================\n");
   if (after_warmup)
@@ -462,7 +485,7 @@ static void cms_main_loop(void) {
 
   lcore_id = rte_lcore_id();
   qconf = &lcore_queue_conf[lcore_id];
-  struct rte_eth_dev *dev = &rte_eth_devices[0];
+  dev = &rte_eth_devices[0];
 				    
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, CMS, "lcore %u has nothing to do\n", lcore_id);
@@ -535,7 +558,24 @@ static void cms_main_loop(void) {
 
 			    struct rte_ether_hdr *eth;
 			    for (j = 0; j < nb_rx; j++) {
-
+            m = pkts_burst[j];
+				    if (debug) {
+              uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
+					    
+              int64_t debug_addr= *(int64_t*) rte_pktmbuf_mtod(m, uint8_t *);
+              int64_t pkt_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+17);
+              if (pkt_len > 64) {
+                debug_addr= *(int64_t*) (rte_pktmbuf_mtod(m, uint8_t *)+64);
+                pkt_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+81);
+              }
+              if (debug_addr != (int64_t) rte_pktmbuf_mtod(m, void *)) {
+                printf("----------------------------------------------------\n");
+                printf("pkt_cnt=%u Packet ID: %u\n", total, pkt_id);
+                printf("Debug: Packet data address mismatch! Expected (phys_addr): %p, Actual (from payload): %p --", (void*)rte_pktmbuf_mtod(m, void *), (void*)debug_addr);
+                printf("Diff %ld (%ld)\n", debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *),abs(debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *))/2368);
+                printf("----------------------------------------------------\n");
+              }
+            }
 				    /*printf("primo:\n");
 				      for (size_t i = 0; i < 32; i++) {
 				      printf("%X ", *(((uint8_t *)phys_addr) + i));
@@ -569,7 +609,6 @@ static void cms_main_loop(void) {
 
 				    // printf("lcore %u: port %u, queue %d, packet %d\n", lcore_id,
 				    // portid, q, j);
-				    m = pkts_burst[j];
 				    // rte_prefetch0(rte_pktmbuf_mtod(m, void *));
 				    if ((prefetch_distance > 0) && (j + prefetch_distance < nb_rx)) {
 					    rte_prefetch0(
@@ -600,19 +639,19 @@ static void cms_main_loop(void) {
 				    }
 			    }
 			    // rearm!
-			    if (bypass) {
+			    if (bypass && nb_rx > 0) {
             rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
           }
+          if (force_rearm) {
+            rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
+            force_rearm = false;
+          }
 
-          //rxq->q_pidx_info.pidx = id;
-			    //qdma_dev->hw_access->qdma_queue_pidx_update(
-			    //    rxq->dev, qdma_dev->is_vf, rxq->queue_id, 1, &rxq->q_pidx_info);
-
-			    if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
+          if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
 				    q--; // if we got MAX_PKT_BURST packets, we need to process them again
 				    max_loops--;
-			    }
-			    else 
+			    } 
+          else 
 				    max_loops = 100;
 
 			    if (nb_rx < MAX_PKT_BURST) {
@@ -765,6 +804,7 @@ static const char short_options[] = "c:" /* columns  */
                                     "Q"  /* silent */
                                     "D"  /* dump pcap */
                                     "B"  /* enable bypass */
+                                    "x"  /* enable debug */
                                     "a"  /* aggressive */
                                     "P:" /* portmask  */
                                     "q:" /* number of queues */
@@ -858,6 +898,9 @@ static int cms_parse_args(int argc, char **argv) {
       break;
     case 'B':
       bypass = true;
+      break;
+    case 'x':
+      debug = true;
       break;
     /* timer period */
     case 'T':
@@ -998,6 +1041,10 @@ static void signal_handler(int signum) {
     printf("\n\nSignal %d received, preparing to exit...\n", signum);
     force_quit = true;
   }
+  if(signum == SIGQUIT) {
+    printf("SIGQUIT received, force rearm\n");
+    force_rearm=true;
+  }
 }
 
 int main(int argc, char **argv) {
@@ -1024,6 +1071,7 @@ int main(int argc, char **argv) {
   force_quit = false;
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
+  signal(SIGQUIT, signal_handler);
 
   /* parse application arguments (after the EAL ones) */
   ret = cms_parse_args(argc, argv);
@@ -1242,6 +1290,7 @@ int main(int argc, char **argv) {
           printf("error reading prefetch tag\n");
           return -1;
         }
+        printf("Prefetch tag for qid=%d: %u\n", x, prefetch_tag);
         // EQDMA_C2H_PFCH_BYP_QID_ADDR 0x1408
         // Read MDMA_C2H_PFCH_BYP_TAG 0x140C to obtain the prefetch tag
         // EQDMA_C2H_PFCH_BYP_TAG_ADDR 0x140C
@@ -1301,6 +1350,8 @@ int main(int argc, char **argv) {
       print_phys(dev, qid);
       phys_addr = get_desc(dev, qid, 0);
       printf("Phys addr %08lx\n", phys_addr);
+      
+      /* single queue
       qdma_write_bypass_reg_addr(dev, phys_addr);
       qdma_write_bypass_reg_num_desc(dev, nb_rxd);
       //qdma_write_bypass_reg_pfch_tag(dev,prefetch_tag);
@@ -1309,10 +1360,24 @@ int main(int argc, char **argv) {
 
       val=qdma_reg_read_usr(dev, 0x512C); //pkt_counter
       printf("PKT COUNTER VAL: %d\n", val);
+      */
+      qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag, 1, nb_rxd);
+
+      uint64_t r_addr;
+      uint32_t r_tag;
+      uint8_t r_valid;
+      uint32_t r_num_desc;
+      
+      //reset counters
+      qdma_bypass_clear_counters(dev);
+
+      qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid, &r_num_desc);
+      printf("addr: %lx tag:%x valid:%u desc:%u\n",r_addr,r_tag,r_valid,r_num_desc);
+      if (debug) qdma_write_bypass_reg_debug(dev, 1); 
     }
-    else {
+    /*else {
       qdma_write_bypass_reg_valid(dev, 0);
-    }
+    }*/
 
     printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
            cms_ports_eth_addr[portid].addr_bytes[0],
