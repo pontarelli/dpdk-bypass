@@ -6276,6 +6276,18 @@ int qdma_write_bypass_reg_num_desc(void *dev_hndl, uint32_t num_desc) {
 		num_desc);
 	return QDMA_SUCCESS;
 }
+int qdma_write_bypass_reg_debug(void *dev_hndl, uint32_t value) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_DEBUG,
+		value);
+	return QDMA_SUCCESS;
+}
+
 
 int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc) {
 
@@ -6534,6 +6546,21 @@ int qdma_read_bypass_reg_module_id(void *dev_hndl, uint32_t *module_id) {
 		QDMA_BYPASS_REG_MODULE_ID);
 	return QDMA_SUCCESS;
 }
+int qdma_read_bypass_reg_debug(void *dev_hndl, uint32_t *value) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!value) {
+		qdma_log_error("%s: value is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*value = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_DEBUG);
+	return QDMA_SUCCESS;
+}
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag) {
 	if (!dev_hndl) {
@@ -6547,11 +6574,11 @@ int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag
 		return -QDMA_ERR_INV_PARAM;
 	}
 	// Write QID to MDMA_C2H_PFCH_BYP_QID register
-	qdma_reg_write_usr(dev_hndl,
+	qdma_reg_write(dev_hndl,
 		MDMA_C2H_PFCH_BYP_QID,
 		(uint32_t)(qid & 0xFFFF));
 	// Read prefetch tag from MDMA_C2H_PFCH_BYP_TAG register
-	*tag = qdma_reg_read_usr(dev_hndl,
+	*tag = qdma_reg_read(dev_hndl,
 		MDMA_C2H_PFCH_BYP_TAG);
 	return QDMA_SUCCESS;
 }
@@ -6589,3 +6616,15 @@ int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *add
 
 	return QDMA_SUCCESS;
 }
+
+int qdma_bypass_clear_counters(void *dev_hndl) {
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_CLEAR_COUNTERS,
+		1);
+	sleep(1);
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_CLEAR_COUNTERS,
+		0);
+
+}
+
