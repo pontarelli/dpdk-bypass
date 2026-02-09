@@ -1,0 +1,154 @@
+diff --git a/dpdk-20.11-original/drivers/net/meson.build b/dpdk-20.11/drivers/net/meson.build
+index 29f4777..d02cfe1 100644
+--- a/dpdk-20.11-original/drivers/net/meson.build
++++ b/dpdk-20.11/drivers/net/meson.build
+@@ -43,6 +43,7 @@ drivers = ['af_packet',
+ 	'octeontx2',
+ 	'pcap',
+ 	'pfe',
++	'qdma',
+ 	'qede',
+ 	'ring',
+ 	'sfc',
+diff --git a/dpdk-20.11-original/drivers/net/qdma/qdma_access/qdma_platform.h b/dpdk-20.11/drivers/net/qdma/qdma_access/qdma_platform.h
+index 3d844bf..e651650 100644
+--- a/dpdk-20.11-original/drivers/net/qdma/qdma_access/qdma_platform.h
++++ b/dpdk-20.11/drivers/net/qdma/qdma_access/qdma_platform.h
+@@ -103,6 +103,8 @@ void qdma_resource_lock_give(void);
+  * Return:	Nothing
+  *****************************************************************************/
+ void qdma_reg_write(void *dev_hndl, uint32_t reg_offst, uint32_t val);
++void qdma_reg_write_usr(void *dev_hndl, uint32_t reg_offst, uint32_t val);
++
+ 
+ /*****************************************************************************/
+ /**
+@@ -114,6 +116,8 @@ void qdma_reg_write(void *dev_hndl, uint32_t reg_offst, uint32_t val);
+  * Return: Value read
+  *****************************************************************************/
+ uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst);
++uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
++
+ 
+ /*****************************************************************************/
+ /**
+diff --git a/dpdk-20.11-original/drivers/net/qdma/qdma_devops.c b/dpdk-20.11/drivers/net/qdma/qdma_devops.c
+index 12b1953..502ccff 100644
+--- a/dpdk-20.11-original/drivers/net/qdma/qdma_devops.c
++++ b/dpdk-20.11/drivers/net/qdma/qdma_devops.c
+@@ -31,6 +31,7 @@
+  */
+ 
+ #include <stdint.h>
++#include <stdio.h>
+ #include <sys/mman.h>
+ #include <sys/fcntl.h>
+ #include <rte_memzone.h>
+@@ -54,6 +55,7 @@
+ #include "qdma_reg_dump.h"
+ #include "qdma_platform.h"
+ #include "qdma_devops.h"
++#include "rte_pmd_qdma.h"
+ 
+ #ifdef QDMA_LATENCY_OPTIMIZED
+ static void qdma_sort_c2h_cntr_th_values(struct qdma_pci_dev *qdma_dev)
+@@ -1360,11 +1362,28 @@ int qdma_dev_reset(struct rte_eth_dev *dev)
+  */
+ int qdma_dev_configure(struct rte_eth_dev *dev)
+ {
++	printf("\nconfigure called\n");
+ 	struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
+ 	uint16_t qid = 0;
+ 	int ret = 0, queue_base = -1;
+ 	uint8_t stat_id;
+ 
++	// uint32_t r = qdma_reg_read_usr(qdma_dev,0x2000);
++	// printf("qdma_reg_read returned %x\n", r);
++	qdma_reg_write_usr(dev,0x1000,0x1);
++	qdma_reg_write_usr(dev,0x2000,0x00010001);
++	qdma_reg_write_usr(dev,0x8014,0x1);
++	qdma_reg_write_usr(dev,0x800c,0x1);
++	qdma_reg_write_usr(dev,0xC014,0x1);
++	qdma_reg_write_usr(dev,0xC00c,0x1);
++
++
++
++
++	// r = qdma_reg_read(qdma_dev,0x2000);
++	// printf("qdma_reg_read returned dopo %x\n", r);
++
++
+ 	PMD_DRV_LOG(INFO, "Configure the qdma engines\n");
+ 
+ 	qdma_dev->qsets_en = RTE_MAX(dev->data->nb_rx_queues,
+@@ -1466,8 +1485,9 @@ int qdma_dev_configure(struct rte_eth_dev *dev)
+ 		return ret;
+ 	}
+ 
+-	qdma_dev->dev_configured = 1;
+ 
++
++	qdma_dev->dev_configured = 1;
+ 	return 0;
+ }
+ 
+diff --git a/dpdk-20.11-original/drivers/net/qdma/qdma_platform.c b/dpdk-20.11/drivers/net/qdma/qdma_platform.c
+index 0711dc6..fc46f6f 100644
+--- a/dpdk-20.11-original/drivers/net/qdma/qdma_platform.c
++++ b/dpdk-20.11/drivers/net/qdma/qdma_platform.c
+@@ -35,6 +35,7 @@
+ #include "qdma.h"
+ #include <rte_malloc.h>
+ #include <rte_spinlock.h>
++#include <stdio.h>
+ 
+ static rte_spinlock_t resource_lock = RTE_SPINLOCK_INITIALIZER;
+ static rte_spinlock_t reg_access_lock = RTE_SPINLOCK_INITIALIZER;
+@@ -137,6 +138,16 @@ void qdma_reg_write(void *dev_hndl, uint32_t reg_offst, uint32_t val)
+ 	*((volatile uint32_t *)(bar_addr + reg_offst)) = val;
+ }
+ 
++void qdma_reg_write_usr(void *dev_hndl, uint32_t reg_offst, uint32_t val)
++{
++	struct qdma_pci_dev *qdma_dev;
++	uint64_t bar_addr;
++
++	qdma_dev = ((struct rte_eth_dev *)dev_hndl)->data->dev_private;
++	bar_addr = (uint64_t)qdma_dev->bar_addr[qdma_dev->user_bar_idx];
++	*((volatile uint32_t *)(bar_addr + reg_offst)) = val;
++}
++
+ /*****************************************************************************/
+ /**
+  * qdma_reg_read() - Register read API.
+@@ -148,6 +159,7 @@ void qdma_reg_write(void *dev_hndl, uint32_t reg_offst, uint32_t val)
+  *****************************************************************************/
+ uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst)
+ {
++	// printf("qdma_reg_read called with reg_offst: %x\n", reg_offst);
+ 	struct qdma_pci_dev *qdma_dev;
+ 	uint64_t bar_addr;
+ 	uint32_t val;
+@@ -155,6 +167,22 @@ uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst)
+ 	qdma_dev = ((struct rte_eth_dev *)dev_hndl)->data->dev_private;
+ 	bar_addr = (uint64_t)qdma_dev->bar_addr[qdma_dev->config_bar_idx];
+ 	val = *((volatile uint32_t *)(bar_addr + reg_offst));
++	// printf("qdma_reg_read returning value: %x\n", val);
++
++	return val;
++}
++
++uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst)
++{
++	// printf("qdma_reg_read called with reg_offst: %x\n", reg_offst);
++	struct qdma_pci_dev *qdma_dev;
++	uint64_t bar_addr;
++	uint32_t val;
++
++	qdma_dev = ((struct rte_eth_dev *)dev_hndl)->data->dev_private;
++	bar_addr = (uint64_t)qdma_dev->bar_addr[qdma_dev->user_bar_idx];
++	val = *((volatile uint32_t *)(bar_addr + reg_offst));
++	// printf("qdma_reg_read returning value: %x\n", val);
+ 
+ 	return val;
+ }

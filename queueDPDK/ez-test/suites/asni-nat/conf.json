@@ -1,0 +1,26 @@
+{
+    "ifpci": "0000:16:00.1",
+    "exp-dir": "/home/vladimiro/dpdk_patched/queueDPDK/asni-nat",
+    "time": 20,
+    "repetitions":3,
+    "type": "dpdk",
+    "progs": [
+        {
+            "name": "asni-nat",
+            "path": "build/asni-nat",
+            "dpdk-args": "-d librte_net_qdma.so -l 4 -n 4",
+            "app-args": "-p 0x3 --config=\"(0,0,4)\" --rule_ipv4=../chain/fw_10k --rule_ipv6=../chain/rule_ipv6.db"
+        }
+    ],
+    "queues":[1],
+    "descriptors": [1024],
+    "cms": [1048576],
+    "aggressive": [false],
+    "prefetch" :[0],
+    "throughput": true,
+    "cpu": 4,
+    "perf": ["cycles","instructions","cache-references","cache-misses","L1-dcache-loads",
+    "L1-dcache-load-misses","L1-dcache-stores","l2_request.miss","l2_request.all","dTLB-loads","dTLB-load-misses",
+    "LLC-loads","LLC-load-misses","LLC-stores","mem_load_l3_miss_retired.local_dram"],
+    "per-pkt": true
+}

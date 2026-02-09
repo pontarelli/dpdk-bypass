@@ -1,0 +1,115 @@
+diff --git a/lib/librte_eventdev/eventdev_profile.c b/lib/librte_eventdev/eventdev_profile.c
+new file mode 100644
+index 000000000..f673b3976
+--- /dev/null
++++ b/lib/librte_eventdev/eventdev_profile.c
+@@ -0,0 +1,14 @@
++#include "eventdev_profile.h"
++
++/**
++ * Hook callback to trace rte_event_dequeue_burst() calls.
++ * This is needed to enable Event device profiling with
++ * Intel(R) VTune Profiler.
++ */
++uint16_t
++profile_hook_event_dequeue_burst(
++		__rte_unused uint8_t dev_id, __rte_unused uint8_t port_id,
++		__rte_unused uint16_t nb_events, uint16_t nb_dequeued_events)
++{
++	return nb_dequeued_events;
++}
+\ No newline at end of file
+diff --git a/lib/librte_eventdev/eventdev_profile.h b/lib/librte_eventdev/eventdev_profile.h
+new file mode 100644
+index 000000000..e9fbe557e
+--- /dev/null
++++ b/lib/librte_eventdev/eventdev_profile.h
+@@ -0,0 +1,13 @@
++#ifndef _RTE_EVENTDEV_PROFILE_H_
++#define _RTE_EVENTDEV_PROFILE_H_
++
++#include <rte_common.h>
++
++/**
++ * Hook callback to trace rte_event_dequeue_burst() calls.
++ */
++uint16_t
++profile_hook_event_dequeue_burst(uint8_t dev_id, uint8_t port_id,
++		uint16_t nb_events, uint16_t nb_dequeued_events);
++
++#endif
+\ No newline at end of file
+diff --git a/lib/librte_eventdev/meson.build b/lib/librte_eventdev/meson.build
+index 0adc2cd2f..5c92b984f 100644
+--- a/lib/librte_eventdev/meson.build
++++ b/lib/librte_eventdev/meson.build
+@@ -13,7 +13,8 @@ sources = files('rte_eventdev.c',
+ 		'rte_event_eth_rx_adapter.c',
+ 		'rte_event_timer_adapter.c',
+ 		'rte_event_crypto_adapter.c',
+-		'rte_event_eth_tx_adapter.c')
++		'rte_event_eth_tx_adapter.c',
++		'eventdev_profile.c')
+ headers = files('rte_eventdev.h',
+ 		'rte_eventdev_pmd.h',
+ 		'rte_eventdev_pmd_pci.h',
+@@ -25,6 +26,7 @@ headers = files('rte_eventdev.h',
+ 		'rte_event_timer_adapter.h',
+ 		'rte_event_timer_adapter_pmd.h',
+ 		'rte_event_crypto_adapter.h',
+-		'rte_event_eth_tx_adapter.h')
++		'rte_event_eth_tx_adapter.h',
++		'eventdev_profile.h')
+ deps += ['ring', 'ethdev', 'hash', 'mempool', 'mbuf', 'timer', 'cryptodev']
+ deps += ['telemetry']
+diff --git a/lib/librte_eventdev/rte_eventdev.h b/lib/librte_eventdev/rte_eventdev.h
+index ce1fc2ce0..b97d57304 100644
+--- a/lib/librte_eventdev/rte_eventdev.h
++++ b/lib/librte_eventdev/rte_eventdev.h
+@@ -215,6 +215,7 @@ extern "C" {
+ #include <rte_memory.h>
+ #include <rte_errno.h>
+ 
++#include "eventdev_profile.h"
+ #include "rte_eventdev_trace_fp.h"
+ 
+ struct rte_mbuf; /* we just use mbuf pointers; no need to include rte_mbuf.h */
+@@ -1645,6 +1646,7 @@ static inline uint16_t
+ rte_event_dequeue_burst(uint8_t dev_id, uint8_t port_id, struct rte_event ev[],
+ 			uint16_t nb_events, uint64_t timeout_ticks)
+ {
++	uint16_t nb_dequeued_events = 0;
+ 	struct rte_eventdev *dev = &rte_eventdevs[dev_id];
+ 
+ #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
+@@ -1664,12 +1666,16 @@ rte_event_dequeue_burst(uint8_t dev_id, uint8_t port_id, struct rte_event ev[],
+ 	 * requests nb_events as const one
+ 	 */
+ 	if (nb_events == 1)
+-		return (*dev->dequeue)(
++		nb_dequeued_events = (*dev->dequeue)(
+ 			dev->data->ports[port_id], ev, timeout_ticks);
+ 	else
+-		return (*dev->dequeue_burst)(
++		nb_dequeued_events = (*dev->dequeue_burst)(
+ 			dev->data->ports[port_id], ev, nb_events,
+ 				timeout_ticks);
++
++	profile_hook_event_dequeue_burst(dev_id, port_id, nb_events, nb_dequeued_events);
++
++	return nb_dequeued_events;
+ }
+ 
+ /**
+diff --git a/lib/librte_eventdev/version.map b/lib/librte_eventdev/version.map
+index 3e5c09cfd..85924b478 100644
+--- a/lib/librte_eventdev/version.map
++++ b/lib/librte_eventdev/version.map
+@@ -90,6 +90,7 @@ DPDK_21 {
+ 	rte_event_timer_arm_tmo_tick_burst;
+ 	rte_event_timer_cancel_burst;
+ 	rte_eventdevs;
++	profile_hook_event_dequeue_burst;
+ 
+ 	local: *;
+ };

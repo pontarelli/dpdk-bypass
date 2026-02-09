@@ -1,0 +1,23 @@
+{
+    "ifpci": "0000:16:00.1",
+    "exp-dir": "/home/vladimiro/dpdk_patched/marco/dpdk-20.11/queueDPDK/cms",
+    "time": 20,
+    "repetitions":1,
+    "type": "dpdk-rfc",
+    "progs": [
+        {
+            "name": "cms",
+            "path": "build/cms",
+            "dpdk-args": "-d librte_net_qdma.so -l 4 -n 4",
+            "app-args": "-P 1 -T 1"
+        }
+    ],
+    "queues":[1,2,4,8,16,32,64,128,256,512,1024,2048],
+    "descriptors": [1024],
+    "cms": [1048576],
+    "aggressive": [true],
+    "prefetch" :[1],
+    "throughput": true,
+    "cpu": 4,
+    "per-pkt": true
+}
