@@ -6289,6 +6289,21 @@ int qdma_write_bypass_reg_debug(void *dev_hndl, uint32_t value) {
 }
 
 
+int qdma_write_queue_bypass_tag(void *dev_hndl, uint16_t qid, uint32_t tag, uint8_t valid) {
+
+	// Use the qid as the page index 
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+		(uint32_t)(qid & 0xFFFF));
+
+	// Write tag and valid
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_TABLE + 12,
+		valid ? (tag | (0x1 << 7)) : (tag & ~(0x1 << 7)));
+
+	return QDMA_SUCCESS;
+}
+
 int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc) {
 
 	// Use the qid as the page index 

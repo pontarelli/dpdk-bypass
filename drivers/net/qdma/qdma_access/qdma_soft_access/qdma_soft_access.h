@@ -308,6 +308,7 @@ int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
 int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
 int qdma_write_bypass_reg_num_desc(void *dev_hndl, uint32_t num_desc);
 int qdma_write_bypass_reg_debug(void *dev_hndl, uint32_t value);
+int qdma_write_queue_bypass_tag(void *dev_hndl, uint16_t qid, uint32_t tag, uint8_t valid);
 int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid,
                                       uint64_t addr, uint32_t tag,
                                       uint8_t valid, uint32_t num_desc);
