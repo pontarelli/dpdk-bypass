@@ -821,7 +821,23 @@ int rearm_c2h_ring_bypass(void *rxqueue)
 
 	return 0;
 }
+int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue)
+{
+	struct qdma_rx_queue* rxq = (struct qdma_rx_queue*)rxqueue;
+	struct qdma_tx_queue* txq = (struct qdma_tx_queue*)txqueue;
+	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
+	uint16_t cidx=txq->wb_status->cidx;
+	
+	rxq->q_pidx_info.pidx=cidx;
+	
+	rte_wmb();
+    qdma_dev->hw_access->qdma_queue_pidx_update(rxq->dev,
+		qdma_dev->is_vf,
+		rxq->queue_id, 1, &rxq->q_pidx_info);
 
+	return 0;
+
+}
 
 /* Populate C2H ring with new buffers */
 static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
@@ -1329,6 +1345,102 @@ uint16_t qdma_xmit_pkts_st(struct qdma_tx_queue *txq, struct rte_mbuf **tx_pkts,
 
 	return count;
 }
+
+/* Transmit API for Streaming mode */
+uint16_t qdma_xmit_pkts_bypass(struct qdma_tx_queue *txq, struct rte_mbuf **tx_pkts,
+			uint16_t nb_pkts)
+{
+	struct rte_mbuf *mb;
+	uint64_t pkt_len = 0;
+	int avail, in_use, ret, nsegs;
+	uint16_t cidx = 0;
+	uint16_t count = 0, id;
+	struct qdma_pci_dev *qdma_dev = txq->dev->data->dev_private;
+#ifdef TEST_64B_DESC_BYPASS
+	int bypass_desc_sz_idx = qmda_get_desc_sz_idx(txq->bypass_desc_sz);
+
+	if (unlikely(txq->en_bypass &&
+			bypass_desc_sz_idx == SW_DESC_CNTXT_64B_BYPASS_DMA)) {
+		return qdma_xmit_64B_desc_bypass(txq, tx_pkts, nb_pkts);
+	}
+#endif
+
+	id = txq->q_pidx_info.pidx;
+	cidx = txq->wb_status->cidx;
+	//printf("Xmit start on tx queue-id:%d, tail index:%d cidx:%d\n",
+	//		txq->queue_id, id,cidx);
+
+	/* Free transmitted mbufs back to pool */
+	//sal: cambio qui per mantenere i descrittori?
+	//reclaim_tx_mbuf(txq, cidx, 0);
+	txq->tx_fl_tail=cidx;
+
+	in_use = (int)id - cidx;
+	if (in_use < 0)
+		in_use += (txq->nb_tx_desc - 1);
+
+	/* Make 1 less available, otherwise if we allow all descriptors
+	 * to be filled, when nb_pkts = nb_tx_desc - 1, pidx will be same
+	 * as old pidx and HW will treat this as no new descriptors were added.
+	 * Hence, DMA won't happen with new descriptors.
+	 */
+	avail = txq->nb_tx_desc - 2 - in_use;
+	if (!avail) {
+		PMD_DRV_LOG(DEBUG, "Tx queue full, in_use = %d", in_use);
+		return 0;
+	}
+
+	for (count = 0; count < nb_pkts; count++) {
+		mb = tx_pkts[count];
+		nsegs = mb->nb_segs;
+		if (nsegs > avail) {
+			/* Number of segments in current mbuf are greater
+			 * than number of descriptors available,
+			 * hence update PIDX and return
+			 */
+			break;
+		}
+		avail -= nsegs;
+		id = txq->q_pidx_info.pidx;
+		txq->sw_ring[id] = mb;
+		pkt_len += rte_pktmbuf_pkt_len(mb);
+
+		ret = qdma_ul_update_st_h2c_desc(txq, txq->offloads, mb);
+		if (ret < 0)
+			break;
+	}
+
+	txq->stats.pkts += count;
+	txq->stats.bytes += pkt_len;
+
+	/* Make sure writes to the H2C descriptors are synchronized
+	 * before updating PIDX
+	 */
+	rte_wmb();
+
+#if (MIN_TX_PIDX_UPDATE_THRESHOLD > 1)
+	rte_spinlock_lock(&txq->pidx_update_lock);
+#endif
+	txq->tx_desc_pend += count;
+
+	/* Send PIDX update only if pending desc is more than threshold
+	 * Saves frequent Hardware transactions
+	 */
+	if (txq->tx_desc_pend >= MIN_TX_PIDX_UPDATE_THRESHOLD) {
+		qdma_dev->hw_access->qdma_queue_pidx_update(txq->dev,
+			qdma_dev->is_vf,
+			txq->queue_id, 0, &txq->q_pidx_info);
+
+		txq->tx_desc_pend = 0;
+	}
+#if (MIN_TX_PIDX_UPDATE_THRESHOLD > 1)
+	rte_spinlock_unlock(&txq->pidx_update_lock);
+#endif
+	PMD_DRV_LOG(DEBUG, " xmit completed with count:%d\n", count);
+
+	return count;
+}
+
 
 /* Transmit API for Memory mapped mode */
 uint16_t qdma_xmit_pkts_mm(struct qdma_tx_queue *txq, struct rte_mbuf **tx_pkts,
