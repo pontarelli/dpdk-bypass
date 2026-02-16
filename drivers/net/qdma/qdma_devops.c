@@ -56,6 +56,7 @@
 #include "qdma_platform.h"
 #include "qdma_soft_reg.h"
 #include "qdma_reg_dump.h"
+#include "rte_common.h"
 #include "rte_pmd_qdma.h"
 
 #ifdef QDMA_LATENCY_OPTIMIZED
