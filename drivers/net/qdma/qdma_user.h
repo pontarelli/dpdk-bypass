@@ -144,6 +144,8 @@ int qdma_ul_extract_st_cmpt_info(void *ul_cmpt_entry, void *cmpt_info);
  */
 uint16_t qdma_ul_get_cmpt_pkt_len(void *ul_cmpt_entry);
 
+uint16_t qdma_ul_get_cmpt_pkt_id(void *ul_cmpt_entry);
+
 /**
  * Processes the immediate data for the given completion ring entry
  * and stores the immediate data in a file.

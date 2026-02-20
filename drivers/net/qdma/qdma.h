@@ -122,7 +122,7 @@ enum reset_state_t {
 	RESET_STATE_INVALID
 };
 
-/** MM Write-back status structure **/
+/** MM Write-back status structure **/ //(Table 17 in QDMA HW spec)
 struct __attribute__ ((packed)) wb_status
 {
 	volatile uint16_t	pidx; /** in C2H WB **/
