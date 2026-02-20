@@ -80,6 +80,13 @@ uint16_t qdma_ul_get_cmpt_pkt_len(void *ul_cmpt_entry)
 	return ((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->pkt_len;
 }
 
+
+uint16_t qdma_ul_get_cmpt_pkt_id(void *ul_cmpt_entry)
+{
+	return ((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->pkt_id;
+}
+
+
 /**
  * Processes the immediate data for the given completion ring entry
  * and stores in a file.
