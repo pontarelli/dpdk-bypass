@@ -388,7 +388,12 @@ int qdma_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
    * double the cmpl ring size to avoid run out of cmpl entry while
    * desc. ring still have free entries
    */
-  rxq->nb_rx_cmpt_desc = ((nb_rx_desc * 2) + 1);
+  
+  if (qdma_dev->q_info[rx_queue_id].rx_bypass_mode == RTE_PMD_QDMA_RX_BYPASS_SIMPLE)
+    rxq->nb_rx_cmpt_desc = (nb_rx_desc + 1);
+  else
+    rxq->nb_rx_cmpt_desc = ((nb_rx_desc *2) + 1);
+  
   rxq->en_prefetch = qdma_dev->q_info[rx_queue_id].en_prefetch;
   rxq->cmpt_desc_len = qdma_dev->q_info[rx_queue_id].cmpt_desc_sz;
   if ((rxq->cmpt_desc_len == RTE_PMD_QDMA_CMPT_DESC_LEN_64B) &&
@@ -1304,8 +1309,10 @@ int qdma_dev_configure(struct rte_eth_dev *dev) {
     qdma_reg_write_usr(dev, 0x2000, val);
   }
   // qdma_reg_write_usr(dev, 0x1000, 0x40);
+  //#writes to enable Onic CMAC port 0
   qdma_reg_write_usr(dev, 0x8014, 0x1);
   qdma_reg_write_usr(dev, 0x800c, 0x1);
+  //#writes to enable Onic CMAC port 1
   qdma_reg_write_usr(dev, 0xC014, 0x1);
   qdma_reg_write_usr(dev, 0xC00c, 0x1);
 
@@ -1378,7 +1385,9 @@ int qdma_dev_configure(struct rte_eth_dev *dev) {
     qdma_dev->q_info[qid].queue_mode = RTE_PMD_QDMA_STREAMING_MODE;
 
     /* Disable the cmpt over flow check by default */
-    qdma_dev->q_info[qid].dis_cmpt_ovf_chk = 0;
+    //qdma_dev->q_info[qid].dis_cmpt_ovf_chk = 0; 
+    qdma_dev->q_info[qid].dis_cmpt_ovf_chk = 1; 
+    printf("qdma_dev_configure: dis_cmpt_ovf_chk set to %d for qid %d\n",  qdma_dev->q_info[qid].dis_cmpt_ovf_chk, qid);
 
     qdma_dev->q_info[qid].trigger_mode = qdma_dev->trigger_mode;
     qdma_dev->q_info[qid].timer_count = qdma_dev->timer_count;
@@ -1521,6 +1530,7 @@ int qdma_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t qid) {
     q_cmpt_ctxt.full_upd = 1;
 #endif // QDMA_LATENCY_OPTIMIZED
     q_cmpt_ctxt.en_stat_desc = 1;
+    printf("triggermode %d threshidx %d timeridx %d\n", rxq->triggermode, rxq->threshidx, rxq->timeridx);
     q_cmpt_ctxt.trig_mode = rxq->triggermode;
     q_cmpt_ctxt.fnc_id = rxq->func_id;
     q_cmpt_ctxt.counter_idx = rxq->threshidx;
@@ -1531,7 +1541,7 @@ int qdma_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t qid) {
     q_cmpt_ctxt.desc_sz = cmpt_desc_fmt;
     q_cmpt_ctxt.valid = 1;
     if (qdma_dev->dev_cap.cmpt_ovf_chk_dis)
-      q_cmpt_ctxt.ovf_chk_dis = rxq->dis_overflow_check;
+      q_cmpt_ctxt.ovf_chk_dis = rxq->dis_overflow_check; //disable overflow CMPT ring check
 
     q_sw_ctxt.desc_sz = SW_DESC_CNTXT_C2H_STREAM_DMA;
     q_sw_ctxt.frcd_en = 1;
