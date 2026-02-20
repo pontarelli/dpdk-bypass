@@ -2,7 +2,7 @@
  * Copyright(c) 2010-2016 Intel Corporation
  */
 
-#include "drivers/net/ark/ark_mpu.h"
+#include "rte_ethdev_driver.h"
 #include "rte_pmd_qdma.h"
 #include "xxhash64.h"
 #include <errno.h>
@@ -41,6 +41,17 @@
 #include <time.h>
 #define abs(x) ((x) < 0 ? -(x) : (x))
 
+struct qdma_rx_queue {
+	struct rte_mempool	*mb_pool; /**< mbuf pool to populate RX ring. */
+	void			*rx_ring; /**< RX ring virtual address */
+	union qdma_ul_st_cmpt_ring	*cmpt_ring;
+	struct wb_status	*wb_status;
+	struct rte_mbuf		**sw_ring; /**< address of RX software ring. */
+	struct rte_eth_dev	*dev;
+
+	uint16_t		rx_tail;
+};
+
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
 int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
@@ -72,8 +83,11 @@ uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
 void qdma_reg_write(void *dev_hndl, uint32_t reg_offst, uint32_t val);
 void qdma_reg_write_usr(void *dev_hndl, uint32_t reg_offst, uint32_t val);
 int rearm_c2h_ring_bypass(void* rxq);
+int rearm_c2h_ring_bypass_tx(void* rxq, void* txq);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
+uint16_t qdma_xmit_pkts_bypass(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
 struct rte_eth_dev *dev=NULL;
+uint16_t pending;
 
 /* PCAP file format structures */
 typedef struct {
@@ -176,11 +190,11 @@ struct countmin {
 struct countmin *cm;
 
 static volatile bool force_quit;
-static volatile int active_q = 0;
 bool silent = false;
 bool dump = false;
 bool bypass = false;
 bool debug = false;
+bool retransmit = false;
 uint64_t phys_addr;
 
 /* MAC updating enabled by default */
@@ -263,22 +277,29 @@ struct cms_port_statistics port_statistics[RTE_MAX_ETHPORTS]
 
 #define MAX_TIMER_PERIOD 86400 /* 1 day max */
 /* A tsc-based timer responsible for triggering statistics printout */
-static uint64_t timer_period = 10; /* default period is 10 seconds */
+static uint64_t timer_period = 1; /* default period is 1 second */
+
+uint64_t debug_error=0;
+uint64_t cmpl_error=0;
+uint64_t prev_debug_error=0;
+uint64_t prev_cmpl_error=0;
 uint32_t spin_time = 0;
 uint32_t miss = 0;
 uint32_t total = 0;
 uint32_t empty = 0;
+uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used to detect packet loss */
+uint16_t sw_debug_id[2048] = {0}; /* software packet ID for each queue, used to detect packet loss */
+
 bool aggressive = false; /* aggressive mode disabled by default */
 static unsigned prefetch_distance =
     4;                          /* prefetch distance for mbufs in burst */
 uint32_t cms_columns = COLUMNS; /* number of columns in the count-min sketch */
-bool after_warmup = false;      /* reset statistics after warmup time */
 /* Print out statistics on packets dropped */
 uint64_t measured_packets_rx = 0;
-uint64_t measured_packets_rx2 = 0;
-uint64_t measured_packets_rx3 = 0;
 
 uint64_t measured_tick = 0;
+uint64_t rx_pkt_prev=0;
+  
 static void print_stats(void) {
   uint64_t total_packets_dropped = 0, total_packets_tx = 0,
            total_packets_rx = 0;
@@ -305,7 +326,7 @@ static void print_stats(void) {
     if ((cms_enabled_port_mask & (1 << portid)) == 0)
       continue;
 
-    for (uint q = 0; q < cms_rx_queue_per_lcore; q++) {
+    for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
 
       uint64_t diff_tx = port_statistics[portid][q].tx - prev_tx[portid][q];
       uint64_t diff_rx = port_statistics[portid][q].rx - prev_rx[portid][q];
@@ -332,6 +353,7 @@ static void print_stats(void) {
       prev_tx[portid][q] = port_statistics[portid][q].tx;
       prev_rx[portid][q] = port_statistics[portid][q].rx;
       prev_dropped[portid][q] = port_statistics[portid][q].dropped;
+
     }
   }
   printf(
@@ -361,8 +383,17 @@ static void print_stats(void) {
     printf("With debug\n");
   else
     printf("Without debug\n");
-  
-  
+  if (retransmit)
+    printf("With retransmission\n");
+  else
+    printf("Without retransmission\n");
+  if (cms_rx_queue_per_lcore==1) printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error, cmpl_error - prev_cmpl_error);
+  if (debug) printf("Debug errors: %lu (diff:%'ld)\n", debug_error, debug_error - prev_debug_error);
+  prev_cmpl_error=cmpl_error;
+  prev_debug_error=debug_error;
+  print_c2h_ring_status((void*)dev->data->rx_queues[0]);
+  printf("pending: %u\n",pending);  
+  measured_tick++;
   uint32_t val_l = qdma_reg_read_usr(dev,0xB020);
   uint32_t val_h = qdma_reg_read_usr(dev,0xB024);
   uint64_t rx_pkt = ((uint64_t)val_h <<32) | val_l;
@@ -371,17 +402,15 @@ static void print_stats(void) {
   printf("packets on q=2 : %'14lu\n",port_statistics[0][2].rx);
   printf("packets on q=3 : %'14lu\n",port_statistics[0][3].rx);
 
-  printf("Packet Adapter received packets: %ld\n", rx_pkt);  
+  printf("Packet Adapter received packets: %ld (diff: %'14ld)\n", rx_pkt, rx_pkt-rx_pkt_prev);  
+  rx_pkt_prev = rx_pkt;
   uint32_t rx_pkt2 = qdma_reg_read_usr(dev,0x512C);
   printf("QDMA Subsystem received packets: %d\n", rx_pkt2);  
   printf("diff: %lu\n", rx_pkt-rx_pkt2);    
   
   printf("prefetch distance: %u\n", prefetch_distance);
   printf("\n====================================================\n");
-  if (after_warmup)
-    measured_packets_rx += (total_packets_rx - total_packets_rx_prev);
-  if (after_warmup)
-    measured_tick++;
+  
   /* Reset previous statistics */
   total_packets_tx_prev = total_packets_tx;
   total_packets_rx_prev = total_packets_rx;
@@ -483,7 +512,7 @@ static void cms_main_loop(void) {
   struct rte_mbuf *m;
   int sent;
   unsigned lcore_id;
-  uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc, end_warmup;
+  uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
   unsigned i, j, portid, nb_rx;
   struct lcore_queue_conf *qconf;
   const uint64_t drain_tsc =
@@ -511,9 +540,6 @@ static void cms_main_loop(void) {
     RTE_LOG(INFO, CMS, " -- lcoreid=%u portid=%u\n", lcore_id, portid);
   }
 
-  uint64_t start_time = rte_rdtsc();
-  uint64_t warmup_time = 3 * rte_get_timer_hz();
-  uint64_t stop_time = (1000 * rte_get_timer_hz()) + warmup_time;
   while (!force_quit) {
 
     cur_tsc = rte_rdtsc();
@@ -561,46 +587,78 @@ static void cms_main_loop(void) {
     for (int l = 0; l < 100; l++)
 	    for (i = 0; i < qconf->n_rx_port; i++) {
 		    portid = qconf->rx_port_list[i];
-		    for (int q = 0; q < cms_rx_queue_per_lcore; q++) {
-          if (bypass) {
+		    for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
+          if (bypass && retransmit) {
             rearm_c2h_ring_bypass_tx(dev->data->rx_queues[q],dev->data->tx_queues[q]);
           }
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
 			    port_statistics[portid][q].rx += nb_rx;
 
-			    struct rte_ether_hdr *eth;
 			    for (j = 0; j < nb_rx; j++) {
 				    m = pkts_burst[j];
+            uint16_t pkid = m->timesync; // using timesync field to store packet ID for simplicity: global (not per queue) packet counter
+            if ((sw_pkt_id !=pkid) && (cms_rx_queue_per_lcore==1)) {
+              
+              printf("----------------------------------------------------\n");
+              printf("---               Completion error               ---\n");
+              printf("total: %u\n", total);
+              printf("Packet ID mismatch! Expected: %u, Actual: %u diff:%d\n", sw_pkt_id, pkid,pkid-sw_pkt_id); 
+              printf("completion error: %lu\n",cmpl_error);
+              printf("----------------------------------------------------\n");
+              
+              cmpl_error++;
+              sw_pkt_id = pkid; // resync software packet ID to avoid cascading errors
+            }
+            
 				    if (debug) {
 					    uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
-
-					    int64_t debug_addr= *(int64_t*) rte_pktmbuf_mtod(m, uint8_t *);
-					    int64_t pkt_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+17);
+					    int64_t payload_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+17);
+              uint16_t qid= *(uint16_t*)(rte_pktmbuf_mtod(m, void *)+12);
+              if (qid!=q) {
+                printf("----------------------------------------------------\n");
+                printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n", q, qid);
+                printf("----------------------------------------------------\n");
+              }
+              if (pkt_len > 64) {
+						    payload_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+81);
+					    }
+					    payload_id= payload_id & 0x0FFFF; // mask to 16 bits
+              if ((((payload_id+1)& 0x0FFFF) != sw_debug_id[q]) && (payload_id != sw_debug_id[q])) {
+                debug_error++;
+                /*
+                printf("----------------------------------------------------\n");
+                printf("Debug: Pkt ID mismatch! Payload: %ld, counted: %d diff: %ld\n", payload_id, sw_debug_id[q], (payload_id - sw_debug_id[q]) & 0x0FFFF);
+                printf("debug error: %lu\n",debug_error);
+                printf("completion error: %lu\n",cmpl_error);
+                printf("----------------------------------------------------\n");
+                */
+                sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
+              }
+              /*
+              int64_t debug_addr= *(int64_t*) rte_pktmbuf_mtod(m, uint8_t *);
 					    char flag= *(char*)(rte_pktmbuf_mtod(m, void *)+16);
 					    char tag= *(char*)(rte_pktmbuf_mtod(m, void *)+14);
-					    int16_t qid= *(uint16_t*)(rte_pktmbuf_mtod(m, void *)+12);
-					    if (pkt_len > 64) {
-						    debug_addr= *(int64_t*) (rte_pktmbuf_mtod(m, uint8_t *)+64);
-						    pkt_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+81);
-					    }
 					    printf("----------------------------------------------------\n");
 					    printf("From queue: %d \n", q);
               printf("Payload addr: %p --", (void*)debug_addr);
-					    printf("pkt_cnt=%u Packet ID: %ld\n", total, pkt_id);
+					    printf("pkt_cnt=%u Packet ID: %ld\n", total, payload_id);
 					    printf("tag=%d qid: %d\n", tag, qid);
 					    printf("flag=0x%02x \n", flag);
 					    printf("----------------------------------------------------\n");
 					    if (debug_addr != (int64_t) rte_pktmbuf_mtod(m, void *)) {
 						    printf("----------------------------------------------------\n");
-						    printf("pkt_cnt=%u Packet ID: %ld\n", total, pkt_id);
+						    printf("pkt_cnt=%u Packet ID: %ld\n", total, payload_id);
 						    printf("Debug: Packet data address mismatch! Expected (phys_addr): %p, Actual (from payload): %p --", (void*)rte_pktmbuf_mtod(m, void *), (void*)debug_addr);
 						    printf("Diff %ld (%ld)\n", debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *),abs(debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *))/2368);
 						    printf("----------------------------------------------------\n");
 					    }
-                                            //assign debug_tdata = (debug)? {axis_qdma_c2h_tdata[511:168], qid_packet_counter,3'b0,packet_counter_ram_we,3'b0,qdma_c2h_bypass_enable,8'b0,1'b0,qdma_c2h_pfch_tag,5'b0, axis_qdma_c2h_ctrl_qid,reg_num_desc, qdma_c2h_pkt_addr + mult_result} : axis_qdma_c2h_tdata;
+              */
 
 				    }
+            sw_debug_id[q]++;
+            sw_pkt_id++;
+
 				    /*printf("primo:\n");
 				      for (size_t i = 0; i < 32; i++) {
 				      printf("%X ", *(((uint8_t *)phys_addr) + i));
@@ -648,33 +706,28 @@ static void cms_main_loop(void) {
 					    //printf("Packet data: %c%c%c%c\n",pkt_data[pkt_len-4],pkt_data[pkt_len-3],pkt_data[pkt_len-2],pkt_data[pkt_len-1]);
 					    pcap_write_packet(pkt_data, pkt_len);
 				    }
-				    /*if (total %63 == 62) {
-				      qdma_write_bypass_reg_valid(dev, 0);
-				      qdma_write_bypass_reg_valid(dev, 1);
-				      }*/
 				    total++;
 				    //count_add(m);
 				    //cms_simple_forward(m, portid);
 
-				    if (!bypass)
-					    cms_simple_forward(m, portid); 
-              //rte_pktmbuf_free(m);
-
-				    if (after_warmup) {
-					    measured_packets_rx2++;
-				    }
+            if (!bypass) {
+              if (retransmit) {
+                cms_simple_forward(m, portid); 
+              } else {
+                rte_pktmbuf_free(m);
+              }
+            }
+				    measured_packets_rx++;
 			    }
 			    //TX burst
-          // qdma_xmit_pkts_st(struct qdma_tx_queue *txq, struct rte_mbuf **tx_pkts,	uint16_t nb_pkts)
-          if (bypass && nb_rx > 0) {
-            //rearm_c2h_ring_bypass_tx(dev->data->rx_queues[q],dev->data->tx_queues[q]);
-            qdma_xmit_pkts_bypass(dev->data->tx_queues[q], pkts_burst, nb_rx);
+          if (bypass && retransmit && nb_rx > 0) {
+            port_statistics[0][q].tx += qdma_xmit_pkts_bypass(dev->data->tx_queues[q], pkts_burst, nb_rx);
           }
           
           // rearm!
-			    /*if (bypass && nb_rx > 0) {
-            rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
-          }*/
+          if (bypass && !retransmit && (nb_rx > 0)) {
+               rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
+          }
           
           if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
 				    q--; // if we got MAX_PKT_BURST packets, we need to process them again
@@ -689,22 +742,8 @@ static void cms_main_loop(void) {
 			    if (nb_rx == 0) {
 				    empty++;
 			    }
-			    // fare così mi riduce le prestazioni di 1mpps
-			    //  if (after_warmup) {
-			    //  	measured_packets_rx3 += nb_rx;
-			    //  }
 		    }
 	    }
-    // if ((cur_tsc - start_time) > stop_time) { // 13 seconds) {
-    //	end_time = cur_tsc - end_warmup;
-    //	break;
-    // } else if (cur_tsc - start_time > warmup_time) { // 3 seconds
-    //  rte_eth_stats_reset(portid); // skip the first 3 seconds
-    //	printf("Warmup finished\n");
-    //	after_warmup = true;
-    //	end_warmup   = cur_tsc;
-    //	warmup_time  = 1000 * rte_get_timer_hz(); // reset warmup time
-    //}
   }
 }
 
@@ -815,29 +854,15 @@ static unsigned int cms_parse_nqueue(const char *q_arg) {
   return n;
 }
 
-static int cms_parse_timer_period(const char *q_arg) {
-  char *end = NULL;
-  int n;
-
-  /* parse number string */
-  n = strtol(q_arg, &end, 10);
-  if ((q_arg[0] == '\0') || (end == NULL) || (*end != '\0'))
-    return -1;
-  if (n >= MAX_TIMER_PERIOD)
-    return -1;
-
-  return n;
-}
-
 static const char short_options[] = "c:" /* columns  */
                                     "Q"  /* silent */
                                     "D"  /* dump pcap */
                                     "B"  /* enable bypass */
                                     "x"  /* enable debug */
                                     "a"  /* aggressive */
+                                    "T" /* enable retransmit */
                                     "P:" /* portmask  */
                                     "q:" /* number of queues */
-                                    "T:" /* timer period */
                                     "p:" /* prefetch distance */
                                     "d:" /* number of descriptors */
     ;
@@ -863,7 +888,7 @@ static const struct option lgopts[] = {
 
 /* Parse the argument given in the command line of the application */
 static int cms_parse_args(int argc, char **argv) {
-  int opt, ret, timer_secs;
+  int opt, ret;
   char **argvopt;
   int option_index;
   char *prgname = argv[0];
@@ -931,15 +956,8 @@ static int cms_parse_args(int argc, char **argv) {
     case 'x':
       debug = true;
       break;
-    /* timer period */
     case 'T':
-      timer_secs = cms_parse_timer_period(optarg);
-      if (timer_secs < 0) {
-        printf("invalid timer period\n");
-        cms_usage(prgname);
-        return -1;
-      }
-      timer_period = timer_secs;
+      retransmit=true;
       break;
 
     /* long options */
@@ -1068,18 +1086,30 @@ static void check_all_ports_link_status(uint32_t port_mask) {
 static void signal_handler(int signum) {
   if (signum == SIGINT || signum == SIGTERM) {
     printf("\n\nSignal %d received, preparing to exit...\n", signum);
-    for (int qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
+    /*for (uint32_t qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
         uint64_t r_addr;
         uint32_t r_tag;
         uint8_t r_valid;
         uint32_t r_num_desc;
         qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid, &r_num_desc);
         printf("q=%d addr: %lx tag:%u valid:%u desc:%u\n",qid,r_addr,r_tag,r_valid,r_num_desc);
-      }
+      }*/
     
     force_quit = true;
   }
   if(signum == SIGQUIT) {
+    //qdma_inv_rx_queue_ctxts(dev,0,1); 
+    //qdma_clr_rx_queue_ctxts(dev,0,1); 
+    //rearm_c2h_ring_bypass((void*)dev->data->rx_queues[0]);
+    /*uint16_t rx_cmpt_tail= get_cidx(dev->data->rx_queues[0]);
+    printf("Current RX completion tail: %u\n", rx_cmpt_tail);
+    int32_t val= qdma_reg_read(dev,0x1800C);
+	  val &= 0xffff0000; 
+	  val += rx_cmpt_tail; 
+	  qdma_reg_write(dev,0x1800C,val);
+	  rte_wmb();
+	  val= qdma_reg_read(dev,0x1800C);
+    printf("cidx: %d\n",val &0x0ffff);*/
     printf("SIGQUIT received\n");
   }
 }
@@ -1323,7 +1353,7 @@ int main(int argc, char **argv) {
                portid);
 
     int diag;
-    int32_t qid;
+    uint32_t qid;
     uint32_t queue_base;
     diag = rte_pmd_qdma_get_queue_base(portid, &queue_base);
     if (diag < 0)
@@ -1335,6 +1365,7 @@ int main(int argc, char **argv) {
     rxq_conf = dev_info.default_rxconf;
     rxq_conf.offloads = local_port_conf.rxmode.offloads;
 
+    uint32_t qmask=0x7;
     for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) {
       diag =
           rte_pmd_qdma_set_queue_mode(portid, qid, RTE_PMD_QDMA_STREAMING_MODE);
@@ -1347,6 +1378,9 @@ int main(int argc, char **argv) {
         rte_pmd_qdma_configure_rx_bypass(portid, qid, 2,
                                        0); // RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2,
         // Size 0 indicates internal mode descriptor size.
+      } else {
+        rte_pmd_qdma_configure_rx_bypass(portid, qid, 0,
+                                       0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
       }
       ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
                                    rte_eth_dev_socket_id(portid), &rxq_conf,
@@ -1355,7 +1389,7 @@ int main(int argc, char **argv) {
         rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
                  portid);
 
-      if (bypass) {
+      if (bypass && (qid <= qmask)) { 
         if (qdma_bypass_reg_get_prefetch_tag(dev, qid, &prefetch_tag[qid])) {
           printf("error reading prefetch tag\n");
           return -1;
@@ -1406,28 +1440,25 @@ int main(int argc, char **argv) {
     printf("done: \n");
     qdma_write_bypass_reg_debug(dev, 0);     
     if (bypass) {
-      //for (qid = cms_rx_queue_per_lcore-1; qid > -1; qid--) { 
+      qdma_reg_write_usr(dev,0x5150,qmask); //qmask
+      //qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
       for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
-        print_phys(dev, qid);
+        //print_phys(dev, qid);
         phys_addr = get_desc(dev, qid, 0);
         printf("Phys addr %08lx\n", phys_addr);
-      
-        qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag[qid], 1, nb_rxd);
-
-      
-        //reset counters
-        qdma_bypass_clear_counters(dev);
-
+        qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag[qid &qmask], 1, nb_rxd);
         if (debug) qdma_write_bypass_reg_debug(dev, 1); 
       }
-      for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
+      //reset counters
+      qdma_bypass_clear_counters(dev);
+      /*for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
         uint64_t r_addr;
         uint32_t r_tag;
         uint8_t r_valid;
         uint32_t r_num_desc;
         qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid, &r_num_desc);
         printf("q=%d addr: %lx tag:%u valid:%u desc:%u\n",qid,r_addr,r_tag,r_valid,r_num_desc);
-      }
+      }*/
     }
     /*else {
       qdma_write_bypass_reg_valid(dev, 0);
@@ -1460,7 +1491,7 @@ int main(int argc, char **argv) {
   }
 
   for (int i = 0; i < HASHFN_N; i++) {
-    for (int j = 0; j < cms_columns; j++) {
+    for (uint32_t j = 0; j < cms_columns; j++) {
       cm->values[i][j] = 0;
     }
   }
@@ -1487,10 +1518,9 @@ int main(int argc, char **argv) {
   printf("RX packets: %" PRIu64 "\n", stats.ipackets);
   printf("TX packets: %" PRIu64 "\n", stats.opackets);
   printf("RX dropped: %" PRIu64 "\n", stats.imissed);
-  // printf("measured RX: %" PRIu64 "\n", measured_packets_rx);
-  printf("measured RX packets: %.2f\n", (float)measured_packets_rx2);
+  printf("measured RX packets: %.2f\n", (float)measured_packets_rx);
   printf("measured RX Throughput: %.2f\n",
-         (double)measured_packets_rx2 /
+         (double)measured_packets_rx /
              ((double)end_time / (double)rte_get_timer_hz()));
   printf("measured time: %.2f seconds\n",
          (double)end_time / (double)rte_get_timer_hz());
@@ -1509,6 +1539,12 @@ int main(int argc, char **argv) {
     }
   }
   fclose(fp);*/
+
+  if (bypass) {
+   for (uint32_t qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
+        qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0,0);
+    }
+  }
 
   RTE_ETH_FOREACH_DEV(portid) {
     if ((cms_enabled_port_mask & (1 << portid)) == 0)
