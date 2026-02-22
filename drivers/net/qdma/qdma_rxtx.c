@@ -538,7 +538,7 @@ static int process_cmpt_ring(struct qdma_rx_queue *rxq,
 	return 0;
 }
 
-get_cidx(void *rx_queue)
+uint16_t get_cidx(void *rx_queue)
 {
 	struct qdma_rx_queue *rxq = rx_queue;
 
@@ -855,13 +855,20 @@ int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue)
 	struct qdma_tx_queue* txq = (struct qdma_tx_queue*)txqueue;
 	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
 	uint16_t cidx=txq->wb_status->cidx;
+	//printf("TX pidx = %d\n",txq->q_pidx_info.pidx);
+	//printf("TX cidx = %d\n",cidx);
 	
-	rxq->cmpt_cidx_info.wrb_cidx=cidx;
-	
+	struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info=rxq->cmpt_cidx_info;
+
+	//printf("CMPT cidx = %d\n",rxq->cmpt_cidx_info.wrb_cidx);
+	//rxq->cmpt_cidx_info.wrb_cidx=cidx;
+	cmpt_cidx_info.wrb_cidx=cidx;
+	//printf("Rearming C2H ring with TX cidx = %d\n",cidx);
 	rte_wmb();
     qdma_dev->hw_access->qdma_queue_cmpt_cidx_update(rxq->dev,
 		qdma_dev->is_vf,
-		rxq->queue_id, &rxq->cmpt_cidx_info);
+		//rxq->queue_id, &rxq->cmpt_cidx_info);
+		rxq->queue_id, &cmpt_cidx_info);
 
 	return 0;
 
