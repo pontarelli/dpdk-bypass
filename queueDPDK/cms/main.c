@@ -599,30 +599,32 @@ static void cms_main_loop(void) {
 				    m = pkts_burst[j];
             uint16_t pkid = m->timesync; // using timesync field to store packet ID for simplicity: global (not per queue) packet counter
             if ((sw_pkt_id !=pkid) && (cms_rx_queue_per_lcore==1)) {
-              
+              /*
               printf("----------------------------------------------------\n");
               printf("---               Completion error               ---\n");
               printf("total: %u\n", total);
               printf("Packet ID mismatch! Expected: %u, Actual: %u diff:%d\n", sw_pkt_id, pkid,pkid-sw_pkt_id); 
               printf("completion error: %lu\n",cmpl_error);
               printf("----------------------------------------------------\n");
-              
+              */
               cmpl_error++;
               sw_pkt_id = pkid; // resync software packet ID to avoid cascading errors
             }
             
-				    if (debug) {
-					    uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
-					    int64_t payload_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+17);
-              uint16_t qid= *(uint16_t*)(rte_pktmbuf_mtod(m, void *)+12);
+            if (debug) {
+              uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
+              int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
+              uint32_t payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+35);
+              uint16_t qid= *(uint16_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+26);
               if (qid!=q) {
                 printf("----------------------------------------------------\n");
                 printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n", q, qid);
                 printf("----------------------------------------------------\n");
               }
               if (pkt_len > 64) {
-						    payload_id= *(uint32_t*)(rte_pktmbuf_mtod(m, void *)+81);
-					    }
+                payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+95);
+                payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+99);
+              }
 					    payload_id= payload_id & 0x0FFFF; // mask to 16 bits
               if ((((payload_id+1)& 0x0FFFF) != sw_debug_id[q]) && (payload_id != sw_debug_id[q])) {
                 debug_error++;
@@ -635,10 +637,16 @@ static void cms_main_loop(void) {
                 */
                 sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
               }
-              /*
-              int64_t debug_addr= *(int64_t*) rte_pktmbuf_mtod(m, uint8_t *);
-					    char flag= *(char*)(rte_pktmbuf_mtod(m, void *)+16);
-					    char tag= *(char*)(rte_pktmbuf_mtod(m, void *)+14);
+              if (pkid != (payload_counter &0x0FFFF)) {
+                printf("Debug: Packet ID mismatch between CMPL id and payload counter: payload_id: %u pkid:%d,  diff: %u\n", payload_counter &0x0FFFF, pkid, (payload_counter & 0x0FFFF)- pkid);
+                printf("debug error: %lu\n",debug_error);
+                printf("completion error: %lu\n",cmpl_error);
+                printf("----------------------------------------------------\n");
+              }
+              
+              int64_t debug_addr= *(int64_t*) ((uint8_t*)rte_pktmbuf_mtod(m, void *)+14);
+              char flag= *(char*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+30);
+              char tag= *(char*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+28);
 					    printf("----------------------------------------------------\n");
 					    printf("From queue: %d \n", q);
               printf("Payload addr: %p --", (void*)debug_addr);
@@ -653,7 +661,7 @@ static void cms_main_loop(void) {
 						    printf("Diff %ld (%ld)\n", debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *),abs(debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *))/2368);
 						    printf("----------------------------------------------------\n");
 					    }
-              */
+              
 
 				    }
             sw_debug_id[q]++;
