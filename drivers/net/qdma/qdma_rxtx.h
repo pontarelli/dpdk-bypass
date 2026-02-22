@@ -46,5 +46,9 @@ uint32_t get_mm_h2c_ep_addr(void *queue_hndl);
 uint32_t get_mm_buff_size(void *queue_hndl);
 int rearm_c2h_ring_bypass(void* rxq);
 int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue);
+uint16_t get_cidx(void *rx_queue);
+void print_c2h_ring_status(void *rxqueue);
+uint16_t get_pending_desc(void *rxqueue);
+
 
 #endif /* QDMA_DPDK_RXTX_H_ */
