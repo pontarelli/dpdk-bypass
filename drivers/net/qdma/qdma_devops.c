@@ -1385,10 +1385,7 @@ int qdma_dev_configure(struct rte_eth_dev *dev) {
     qdma_dev->q_info[qid].queue_mode = RTE_PMD_QDMA_STREAMING_MODE;
 
     /* Disable the cmpt over flow check by default */
-    //qdma_dev->q_info[qid].dis_cmpt_ovf_chk = 0; 
-    qdma_dev->q_info[qid].dis_cmpt_ovf_chk = 1; 
-    printf("qdma_dev_configure: dis_cmpt_ovf_chk set to %d for qid %d\n",  qdma_dev->q_info[qid].dis_cmpt_ovf_chk, qid);
-
+    qdma_dev->q_info[qid].dis_cmpt_ovf_chk = 0;  
     qdma_dev->q_info[qid].trigger_mode = qdma_dev->trigger_mode;
     qdma_dev->q_info[qid].timer_count = qdma_dev->timer_count;
   }

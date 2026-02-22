@@ -53,24 +53,6 @@ struct qdma_rx_queue {
 };
 
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
-int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
-int qdma_write_bypass_reg_addr(void *dev_hndl, uint64_t addr);
-int qdma_write_bypass_reg_port_id(void *dev_hndl, uint8_t port_id);
-int qdma_write_bypass_reg_qid(void *dev_hndl, uint16_t qid);
-int qdma_write_bypass_reg_func(void *dev_hndl, uint8_t func);
-int qdma_write_bypass_reg_pfch_tag(void *dev_hndl, uint32_t tag);
-int qdma_write_bypass_reg_valid(void *dev_hndl, uint8_t valid);
-int qdma_write_bypass_reg_num_desc(void *dev_hndl, uint32_t num_desc);
-
-int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr);
-int qdma_read_bypass_reg_port_id(void *dev_hndl, uint8_t *port_id);
-int qdma_read_bypass_reg_qid(void *dev_hndl, uint16_t *qid);
-int qdma_read_bypass_reg_func(void *dev_hndl, uint8_t *func);
-int qdma_read_bypass_reg_pfch_tag(void *dev_hndl, uint32_t *tag);
-int qdma_read_bypass_reg_valid(void *dev_hndl, uint8_t *valid);
-int qdma_read_bypass_reg_num_desc(void *dev_hndl, uint32_t *num_desc);
-int qdma_read_bypass_reg_dest_addr(void *dev_hndl, uint32_t *addr_lower);
-int qdma_read_bypass_reg_mult(void *dev_hndl, uint32_t *addr_upper);
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
                                      uint32_t *tag);
@@ -88,7 +70,9 @@ void print_phys(struct rte_eth_dev *dev, uint16_t qid);
 uint16_t qdma_xmit_pkts_bypass(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
 struct rte_eth_dev *dev=NULL;
 uint16_t pending;
-
+uint32_t prefetch_tag[2048];
+uint32_t qmask=0x7;
+  
 /* PCAP file format structures */
 typedef struct {
   uint32_t magic_number;
@@ -178,6 +162,22 @@ static void pcap_file_close(void) {
   }
 }
 
+#define QDMA_BYPASS_REG_TABLE 0x5400
+#define QDMA_BYPASS_REG_TABLE_PAGE_INDEX 0x5FF0
+
+/* update cidx */
+static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
+  
+  // Use the qid as the page index 
+	qdma_reg_write_usr(dev,QDMA_BYPASS_REG_TABLE_PAGE_INDEX,(uint32_t)(qid & 0x0FFFF));
+
+  // Write  cidx, valid, tag
+  uint32_t val = (cidx<<8) | (0x1 << 7) | (tag & 0x3F);
+  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE+12, val);
+
+} 
+
+
 struct rte_eth_stats stats;
 uint16_t port_id = 0;
 #define HASHFN_N 40
@@ -193,12 +193,13 @@ static volatile bool force_quit;
 bool silent = false;
 bool dump = false;
 bool bypass = false;
+uint8_t freerunning = 0; /* cmpt overflow check mode: 0=disabled, 1=enabled */
 bool debug = false;
 bool retransmit = false;
 uint64_t phys_addr;
 
-/* MAC updating enabled by default */
-static int mac_updating = 1;
+/* MAC updating disabled by default */
+static int mac_updating = 0;
 
 #define RTE_LOGTYPE_CMS RTE_LOGTYPE_USER1
 
@@ -387,6 +388,11 @@ static void print_stats(void) {
     printf("With retransmission\n");
   else
     printf("Without retransmission\n");
+  if (freerunning)
+    printf("With freerunning cmpt overflow check\n");
+  else
+    printf("Without freerunning cmpt overflow check\n");
+
   if (cms_rx_queue_per_lcore==1) printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error, cmpl_error - prev_cmpl_error);
   if (debug) printf("Debug errors: %lu (diff:%'ld)\n", debug_error, debug_error - prev_debug_error);
   prev_cmpl_error=cmpl_error;
@@ -590,6 +596,8 @@ static void cms_main_loop(void) {
 		    for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
           if (bypass && retransmit) {
             rearm_c2h_ring_bypass_tx(dev->data->rx_queues[q],dev->data->tx_queues[q]);
+            uint16_t cidx = get_cidx(dev->data->rx_queues[q]);
+            update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // update cidx to rearm the ring
           }
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
@@ -628,13 +636,13 @@ static void cms_main_loop(void) {
 					    payload_id= payload_id & 0x0FFFF; // mask to 16 bits
               if ((((payload_id+1)& 0x0FFFF) != sw_debug_id[q]) && (payload_id != sw_debug_id[q])) {
                 debug_error++;
-                /*
+                
                 printf("----------------------------------------------------\n");
                 printf("Debug: Pkt ID mismatch! Payload: %ld, counted: %d diff: %ld\n", payload_id, sw_debug_id[q], (payload_id - sw_debug_id[q]) & 0x0FFFF);
                 printf("debug error: %lu\n",debug_error);
                 printf("completion error: %lu\n",cmpl_error);
                 printf("----------------------------------------------------\n");
-                */
+                
                 sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
               }
               if (pkid != (payload_counter &0x0FFFF)) {
@@ -647,13 +655,14 @@ static void cms_main_loop(void) {
               int64_t debug_addr= *(int64_t*) ((uint8_t*)rte_pktmbuf_mtod(m, void *)+14);
               char flag= *(char*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+30);
               char tag= *(char*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+28);
-					    printf("----------------------------------------------------\n");
+					    /*printf("----------------------------------------------------\n");
 					    printf("From queue: %d \n", q);
               printf("Payload addr: %p --", (void*)debug_addr);
 					    printf("pkt_cnt=%u Packet ID: %ld\n", total, payload_id);
 					    printf("tag=%d qid: %d\n", tag, qid);
 					    printf("flag=0x%02x \n", flag);
 					    printf("----------------------------------------------------\n");
+              */
 					    if (debug_addr != (int64_t) rte_pktmbuf_mtod(m, void *)) {
 						    printf("----------------------------------------------------\n");
 						    printf("pkt_cnt=%u Packet ID: %ld\n", total, payload_id);
@@ -735,6 +744,8 @@ static void cms_main_loop(void) {
           // rearm!
           if (bypass && !retransmit && (nb_rx > 0)) {
                rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
+               uint16_t cidx = get_cidx(dev->data->rx_queues[q]);
+               update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // update cidx to rearm the ring
           }
           
           if (aggressive && nb_rx == MAX_PKT_BURST && max_loops > 0) {
@@ -869,6 +880,7 @@ static const char short_options[] = "c:" /* columns  */
                                     "x"  /* enable debug */
                                     "a"  /* aggressive */
                                     "T" /* enable retransmit */
+                                    "F" /* enable freerunning */        
                                     "P:" /* portmask  */
                                     "q:" /* number of queues */
                                     "p:" /* prefetch distance */
@@ -967,7 +979,9 @@ static int cms_parse_args(int argc, char **argv) {
     case 'T':
       retransmit=true;
       break;
-
+    case 'F':  
+      freerunning = 1;
+      break;
     /* long options */
     case CMD_LINE_OPT_PORTMAP_NUM:
       ret = cms_parse_port_pair_config(optarg);
@@ -1132,8 +1146,7 @@ int main(int argc, char **argv) {
   unsigned nb_ports_in_mask = 0;
   unsigned int nb_lcores = 0;
   unsigned int nb_mbufs;
-  uint32_t prefetch_tag[2048];
-
+    
   setlocale(LC_NUMERIC, ""); // Usa locale di sistema per i separatori
 
   /* init EAL */
@@ -1373,7 +1386,6 @@ int main(int argc, char **argv) {
     rxq_conf = dev_info.default_rxconf;
     rxq_conf.offloads = local_port_conf.rxmode.offloads;
 
-    uint32_t qmask=0x7;
     for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) {
       diag =
           rte_pmd_qdma_set_queue_mode(portid, qid, RTE_PMD_QDMA_STREAMING_MODE);
@@ -1396,6 +1408,11 @@ int main(int argc, char **argv) {
       if (ret < 0)
         rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
                  portid);
+
+      ret = rte_pmd_qdma_set_cmpt_overflow_check(port_id, qid, !freerunning);      
+      if (ret < 0)
+        rte_exit(EXIT_FAILURE, "rte_pmd_qdma_set_cmpt_overflow_check:err=%d, port=%u\n", ret,
+                 portid);    
 
       if (bypass && (qid <= qmask)) { 
         if (qdma_bypass_reg_get_prefetch_tag(dev, qid, &prefetch_tag[qid])) {
@@ -1457,6 +1474,7 @@ int main(int argc, char **argv) {
         qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag[qid &qmask], 1, nb_rxd);
         if (debug) qdma_write_bypass_reg_debug(dev, 1); 
       }
+
       //reset counters
       qdma_bypass_clear_counters(dev);
       /*for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
