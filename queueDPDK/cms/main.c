@@ -68,6 +68,8 @@ int rearm_c2h_ring_bypass(void* rxq);
 int rearm_c2h_ring_bypass_tx(void* rxq, void* txq);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
 uint16_t qdma_xmit_pkts_bypass(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+void print_c2h_ring_status(void *rxqueue);
+
 struct rte_eth_dev *dev=NULL;
 uint16_t pending;
 uint32_t prefetch_tag[2048];
@@ -334,8 +336,8 @@ static void print_stats(void) {
       uint64_t diff_dropped =
           port_statistics[portid][q].dropped - prev_dropped[portid][q];
 
-      if (diff_tx == 0 && diff_rx == 0 && diff_dropped == 0)
-        continue;
+      if (!(diff_tx == 0 && diff_rx == 0 && diff_dropped == 0)) {
+        
       printf("\nStatistics for port %u queue: %d ------------------------------"
              "\nPackets sent:     %'20llu (diff: %'llu)"
              "\nPackets received: %'20llu (diff: %'llu)"
@@ -346,6 +348,7 @@ static void print_stats(void) {
              (unsigned long long)diff_rx,
              (unsigned long long)port_statistics[portid][q].dropped,
              (unsigned long long)diff_dropped);
+      }
 
       total_packets_dropped += port_statistics[portid][q].dropped;
       total_packets_tx += port_statistics[portid][q].tx;
@@ -398,6 +401,10 @@ static void print_stats(void) {
   prev_cmpl_error=cmpl_error;
   prev_debug_error=debug_error;
   print_c2h_ring_status((void*)dev->data->rx_queues[0]);
+  uint32_t full_counter= qdma_reg_read_usr(dev,0x514C);
+  
+  printf("full_counter: %u\n",full_counter);    
+
   printf("pending: %u\n",pending);  
   measured_tick++;
   uint32_t val_l = qdma_reg_read_usr(dev,0xB020);
@@ -410,7 +417,7 @@ static void print_stats(void) {
 
   printf("Packet Adapter received packets: %ld (diff: %'14ld)\n", rx_pkt, rx_pkt-rx_pkt_prev);  
   rx_pkt_prev = rx_pkt;
-  uint32_t rx_pkt2 = qdma_reg_read_usr(dev,0x512C);
+  uint32_t rx_pkt2 = qdma_reg_read_usr(dev,0x512C)-1; // start from 1 to sync with CMPL id
   printf("QDMA Subsystem received packets: %d\n", rx_pkt2);  
   printf("diff: %lu\n", rx_pkt-rx_pkt2);    
   
@@ -1552,7 +1559,7 @@ int main(int argc, char **argv) {
          (double)end_time / (double)rte_get_timer_hz());
   
   struct rte_eth_dev *dev = &rte_eth_devices[0];
-  int val=qdma_reg_read_usr(dev, 0x512C); //pkt_counter
+  int val=qdma_reg_read_usr(dev, 0x512C); // start from 1 to sync with CMPL id
   printf("PKT COUNTER VAL: %d\n", val);
   
   // save countmin in a file

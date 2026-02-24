@@ -875,8 +875,7 @@ int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue)
 }
 
 /* Populate C2H ring with new buffers */
-//static 
-int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
+static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
 {
 	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
 	struct rte_mbuf *mb;
