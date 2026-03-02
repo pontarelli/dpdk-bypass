@@ -39,6 +39,7 @@
 #include <unistd.h>
 #include "qdma_rxtx.h"
 #include "qdma_devops.h"
+#include "qdma_user.h"
 #include "rte_branch_prediction.h"
 
 /******** User logic dependent functions start **********/
@@ -781,7 +782,8 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 			rxq->stats.bytes += pkt_length;
 			mb = prepare_segmented_packet(rxq,
 					pkt_length, &rxq->rx_tail);
-			mb->timesync=pkt_id;		
+			mb->timesync=pkt_id;
+			mb->dynfield1[0]=qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);	
 			rx_pkts[count_pkts++] = mb;
 		}
 		count++;

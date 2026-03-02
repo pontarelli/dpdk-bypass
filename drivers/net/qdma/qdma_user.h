@@ -51,12 +51,14 @@
 union __attribute__ ((packed)) qdma_ul_st_cmpt_ring {
 	volatile uint64_t data;
         struct __attribute__ ((packed)) {
-		volatile uint32_t rsvd:1;
+		volatile uint32_t rsvd0:1;
 		volatile uint32_t color:1;
 		volatile uint32_t err:1;
-		volatile uint32_t rsvd2:29;
-		volatile uint32_t pkt_len:16;
-		volatile uint32_t pkt_id:16;
+		volatile uint32_t rsvd1:13;   
+		volatile uint32_t qid:11;     // tdata[26:16]
+		volatile uint32_t rsvd2:5;    // tdata[31:27]
+		volatile uint32_t pkt_len:16; // tdata[47:32]
+		volatile uint32_t pkt_id:16;  // tdata[63:48]
 	};
 };
 
@@ -145,6 +147,10 @@ int qdma_ul_extract_st_cmpt_info(void *ul_cmpt_entry, void *cmpt_info);
 uint16_t qdma_ul_get_cmpt_pkt_len(void *ul_cmpt_entry);
 
 uint16_t qdma_ul_get_cmpt_pkt_id(void *ul_cmpt_entry);
+
+uint16_t qdma_ul_get_cmpt_rsvd2(void *ul_cmpt_entry);
+
+uint64_t qdma_ul_get_cmpt_data(void *ul_cmpt_entry);
 
 /**
  * Processes the immediate data for the given completion ring entry

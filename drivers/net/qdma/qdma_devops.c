@@ -391,6 +391,7 @@ int qdma_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
   
   if (qdma_dev->q_info[rx_queue_id].rx_bypass_mode == RTE_PMD_QDMA_RX_BYPASS_SIMPLE)
     rxq->nb_rx_cmpt_desc = (nb_rx_desc + 1);
+    //rxq->nb_rx_cmpt_desc = ((nb_rx_desc *2) + 1);
   else
     rxq->nb_rx_cmpt_desc = ((nb_rx_desc *2) + 1);
   

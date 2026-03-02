@@ -86,6 +86,15 @@ uint16_t qdma_ul_get_cmpt_pkt_id(void *ul_cmpt_entry)
 	return ((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->pkt_id;
 }
 
+uint16_t qdma_ul_get_cmpt_rsvd2(void *ul_cmpt_entry)
+{
+	return (((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->rsvd2) & 0x1F;
+}
+
+uint64_t qdma_ul_get_cmpt_data(void *ul_cmpt_entry)
+{
+	return ((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->data;
+}
 
 /**
  * Processes the immediate data for the given completion ring entry

@@ -53,6 +53,7 @@ struct qdma_rx_queue {
 };
 
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
+uint16_t get_cidx(void *rx_queue);
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
                                      uint32_t *tag);
@@ -179,6 +180,28 @@ static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
 
 } 
 
+/* Read pidx */
+static uint32_t get_bypass_pidx(void *dev, uint16_t qid) {
+  
+  // Use the qid as the page index 
+	qdma_reg_write_usr(dev,QDMA_BYPASS_REG_TABLE_PAGE_INDEX,(uint32_t)(qid & 0x0FFFF));
+
+  // Read  pidx
+  return qdma_reg_read_usr(dev, QDMA_BYPASS_REG_TABLE+16);
+  
+} 
+
+static uint32_t get_bypass_cidx(void *dev, uint16_t qid) {
+  
+  // Use the qid as the page index 
+	qdma_reg_write_usr(dev,QDMA_BYPASS_REG_TABLE_PAGE_INDEX,(uint32_t)(qid & 0x0FFFF));
+
+  // Read  pidx
+  uint32_t val =qdma_reg_read_usr(dev, QDMA_BYPASS_REG_TABLE+12);
+  return (val >> 8) & 0x0FFFF;
+  
+} 
+
 
 struct rte_eth_stats stats;
 uint16_t port_id = 0;
@@ -284,8 +307,12 @@ static uint64_t timer_period = 1; /* default period is 1 second */
 
 uint64_t debug_error=0;
 uint64_t cmpl_error=0;
+uint64_t cmpl_error_seq=0;
 uint64_t prev_debug_error=0;
+uint64_t cmpl_error_dup=0;
 uint64_t prev_cmpl_error=0;
+uint64_t prev_cmpl_error_seq=0;
+uint64_t prev_cmpl_error_dup=0;
 uint32_t spin_time = 0;
 uint32_t miss = 0;
 uint32_t total = 0;
@@ -396,15 +423,34 @@ static void print_stats(void) {
   else
     printf("Without freerunning cmpt overflow check\n");
 
-  if (cms_rx_queue_per_lcore==1) printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error, cmpl_error - prev_cmpl_error);
+  if (cms_rx_queue_per_lcore==1) {
+    printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error, cmpl_error - prev_cmpl_error);
+    printf("Seq Completion errors: %lu (diff:%'ld)\n", cmpl_error_seq, cmpl_error_seq - prev_cmpl_error_seq);
+    printf("Dup Completion errors: %lu (diff:%'ld)\n", cmpl_error_dup, cmpl_error_dup - prev_cmpl_error_dup);
+  }
   if (debug) printf("Debug errors: %lu (diff:%'ld)\n", debug_error, debug_error - prev_debug_error);
+  
   prev_cmpl_error=cmpl_error;
+  prev_cmpl_error_seq=cmpl_error_seq;
+  prev_cmpl_error_dup=cmpl_error_dup;
   prev_debug_error=debug_error;
   print_c2h_ring_status((void*)dev->data->rx_queues[0]);
   uint32_t full_counter= qdma_reg_read_usr(dev,0x514C);
   
   printf("full_counter: %u\n",full_counter);    
+  printf("full_counter+received: %'12lu\n",full_counter+measured_packets_rx);    
 
+  
+  printf("\n====================================================\n");
+  
+  uint32_t pidx = get_bypass_pidx(dev, 0) % 1024;
+  uint32_t cidx = get_bypass_cidx(dev, 0);
+  
+  printf("BYPASS pidx: %u, cidx: %u", pidx, cidx);
+  if (pidx==cidx) printf("  (EMPTY) ");
+  printf("\n"); 
+  printf("\n====================================================\n");
+  
   printf("pending: %u\n",pending);  
   measured_tick++;
   uint32_t val_l = qdma_reg_read_usr(dev,0xB020);
@@ -553,6 +599,9 @@ static void cms_main_loop(void) {
     RTE_LOG(INFO, CMS, " -- lcoreid=%u portid=%u\n", lcore_id, portid);
   }
 
+  uint16_t debug_counter_prev = 255;
+  uint16_t pktid_prev = 255;
+			    
   while (!force_quit) {
 
     cur_tsc = rte_rdtsc();
@@ -611,22 +660,37 @@ static void cms_main_loop(void) {
 			    port_statistics[portid][q].rx += nb_rx;
 
 			    for (j = 0; j < nb_rx; j++) {
+				    total++;
 				    m = pkts_burst[j];
             uint16_t pkid = m->timesync; // using timesync field to store packet ID for simplicity: global (not per queue) packet counter
+            uint16_t debug_counter = m->dynfield1[0];
             if ((sw_pkt_id !=pkid) && (cms_rx_queue_per_lcore==1)) {
-              /*
+              /* 
               printf("----------------------------------------------------\n");
               printf("---               Completion error               ---\n");
               printf("total: %u\n", total);
               printf("Packet ID mismatch! Expected: %u, Actual: %u diff:%d\n", sw_pkt_id, pkid,pkid-sw_pkt_id); 
+              printf("debug counter: %d\n", debug_counter);
+              printf("debug_counter_prev: %d\n", debug_counter_prev);
+              printf("pktid: %d\n", pkid);
+              printf("pktid_prev: %d\n", pktid_prev);
               printf("completion error: %lu\n",cmpl_error);
               printf("----------------------------------------------------\n");
               */
               cmpl_error++;
               sw_pkt_id = pkid; // resync software packet ID to avoid cascading errors
             }
-            
-            if (debug) {
+            debug_counter_prev = debug_counter;
+            if (pkid == pktid_prev) cmpl_error_dup++;
+            if (pkid != (pktid_prev + 1) && (pkid != 0) && (pkid != pktid_prev)) {
+              cmpl_error_seq++;
+              /*
+              printf("lost completion entry\n");
+              printf("pktid: %d\n", pkid);
+              printf("pktid_prev: %d\n", pktid_prev);*/
+            }
+
+	          if (debug) {
               uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
               int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
               uint32_t payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+35);
@@ -648,14 +712,18 @@ static void cms_main_loop(void) {
                 printf("Debug: Pkt ID mismatch! Payload: %ld, counted: %d diff: %ld\n", payload_id, sw_debug_id[q], (payload_id - sw_debug_id[q]) & 0x0FFFF);
                 printf("debug error: %lu\n",debug_error);
                 printf("completion error: %lu\n",cmpl_error);
+                printf("total: %u\n",total);
                 printf("----------------------------------------------------\n");
                 
                 sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
               }
-              if (pkid != (payload_counter &0x0FFFF)) {
+              if ((pkid+cmpl_error  &0x0FFFF) != (payload_counter &0x0FFFF)) {
                 printf("Debug: Packet ID mismatch between CMPL id and payload counter: payload_id: %u pkid:%d,  diff: %u\n", payload_counter &0x0FFFF, pkid, (payload_counter & 0x0FFFF)- pkid);
                 printf("debug error: %lu\n",debug_error);
                 printf("completion error: %lu\n",cmpl_error);
+                printf("pktid: %d\n", pkid);
+                printf("pktid_prev: %d\n", pktid_prev);
+                printf("total: %u\n",total);
                 printf("----------------------------------------------------\n");
               }
               
@@ -680,6 +748,7 @@ static void cms_main_loop(void) {
               
 
 				    }
+            pktid_prev = pkid;
             sw_debug_id[q]++;
             sw_pkt_id++;
 
@@ -730,7 +799,6 @@ static void cms_main_loop(void) {
 					    //printf("Packet data: %c%c%c%c\n",pkt_data[pkt_len-4],pkt_data[pkt_len-3],pkt_data[pkt_len-2],pkt_data[pkt_len-1]);
 					    pcap_write_packet(pkt_data, pkt_len);
 				    }
-				    total++;
 				    //count_add(m);
 				    //cms_simple_forward(m, portid);
 
@@ -1139,6 +1207,8 @@ static void signal_handler(int signum) {
 	  rte_wmb();
 	  val= qdma_reg_read(dev,0x1800C);
     printf("cidx: %d\n",val &0x0ffff);*/
+    uint16_t cidx = get_cidx(dev->data->rx_queues[0]);
+    update_cidx(dev, 0, cidx, prefetch_tag[0]); // update cidx to rearm the ring
     printf("SIGQUIT received\n");
   }
 }
@@ -1481,7 +1551,12 @@ int main(int argc, char **argv) {
         qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag[qid &qmask], 1, nb_rxd);
         if (debug) qdma_write_bypass_reg_debug(dev, 1); 
       }
-
+      
+      if (freerunning) {
+        qdma_write_bypass_reg_debug(dev, 2); 
+        if (debug) qdma_write_bypass_reg_debug(dev, 3); 
+      }
+      
       //reset counters
       qdma_bypass_clear_counters(dev);
       /*for (qid = 0; qid < cms_rx_queue_per_lcore; qid++) { 
