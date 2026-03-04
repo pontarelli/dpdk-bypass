@@ -107,6 +107,8 @@
 
 #define DEFAULT_QDMA_CMPT_DESC_LEN (RTE_PMD_QDMA_CMPT_DESC_LEN_8B)
 
+#define PRINT_FUNCTION_NAME() PMD_DRV_LOG(DEBUG, "%s():%d\n", __func__, __LINE__)
+
 
 enum dma_data_direction {
 	DMA_BIDIRECTIONAL = 0,
