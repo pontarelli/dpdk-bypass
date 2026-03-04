@@ -434,10 +434,12 @@ static void print_stats(void) {
   prev_cmpl_error_seq=cmpl_error_seq;
   prev_cmpl_error_dup=cmpl_error_dup;
   prev_debug_error=debug_error;
-  for (int q=0; q<2; q++) {
-	  printf("==========Q=%d=========\n",q);
-	  print_c2h_ring_status((void*)dev->data->rx_queues[q]);
-  }
+  /*if (cms_rx_queue_per_lcore>1)
+	  for (int q=0; q<2; q++) {
+		  printf("==========Q=%d=========\n",q);
+		  print_c2h_ring_status((void*)dev->data->rx_queues[q]);
+	  }
+  */    
   uint32_t full_counter= qdma_reg_read_usr(dev,0x514C);
   
   printf("full_counter: %u\n",full_counter);    
@@ -1544,7 +1546,7 @@ int main(int argc, char **argv) {
                portid);
 
     printf("done: \n");
-    qdma_write_bypass_reg_debug(dev, 0);     
+    qdma_write_bypass_reg_debug(dev, 0);
     if (bypass) {
       qdma_reg_write_usr(dev,0x5150,qmask); //qmask
       //qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
