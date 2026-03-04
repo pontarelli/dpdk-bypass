@@ -1060,6 +1060,7 @@ int qdma_dev_infos_get(struct rte_eth_dev *dev,
  *   Pointer to Ethernet device structure.
  */
 int qdma_dev_stop(struct rte_eth_dev *dev) {
+PRINT_FUNCTION_NAME();
 #ifdef RTE_LIBRTE_QDMA_DEBUG_DRIVER
   struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
 #endif
@@ -1603,6 +1604,7 @@ int qdma_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t qid) {
 }
 
 int qdma_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t qid) {
+PRINT_FUNCTION_NAME();
   struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
   struct qdma_rx_queue *rxq;
   uint32_t queue_base = qdma_dev->queue_base;
