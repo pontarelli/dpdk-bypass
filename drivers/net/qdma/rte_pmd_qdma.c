@@ -1581,6 +1581,7 @@ int rte_pmd_qdma_dev_cmptq_start(int port_id, uint32_t qid)
 static int qdma_pf_cmptq_context_invalidate(struct rte_eth_dev *dev,
 		uint32_t qid)
 {
+    PRINT_FUNCTION_NAME();
 	struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
 	struct qdma_cmpt_queue *cmptq;
 	uint32_t sz, i = 0;
@@ -1651,6 +1652,7 @@ err_out:
  ******************************************************************************/
 int rte_pmd_qdma_dev_cmptq_stop(int port_id, uint32_t qid)
 {
+	PRINT_FUNCTION_NAME();
 	struct rte_eth_dev *dev;
 	struct qdma_pci_dev *qdma_dev;
 	int ret = 0;
