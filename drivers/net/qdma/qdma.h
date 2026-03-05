@@ -107,8 +107,8 @@
 
 #define DEFAULT_QDMA_CMPT_DESC_LEN (RTE_PMD_QDMA_CMPT_DESC_LEN_8B)
 
-#define PRINT_FUNCTION_NAME() PMD_DRV_LOG(DEBUG, "%s():%d\n", __func__, __LINE__)
-
+//#define PRINT_FUNCTION_NAME() PMD_DRV_LOG(DEBUG, "%s():%d\n", __func__, __LINE__)
+#define PRINT_FUNCTION_NAME()
 
 enum dma_data_direction {
 	DMA_BIDIRECTIONAL = 0,
@@ -127,9 +127,19 @@ enum reset_state_t {
 /** MM Write-back status structure **/ //(Table 17 in QDMA HW spec)
 struct __attribute__ ((packed)) wb_status
 {
-	volatile uint16_t	pidx; /** in C2H WB **/
-	volatile uint16_t	cidx; /** Consumer-index **/
-	uint32_t	rsvd2; /** Reserved. **/
+	union {
+		struct {
+			volatile uint16_t	pidx; /** Producer-index **/
+			volatile uint16_t	cidx; /** Consumer-index **/
+			volatile uint32_t	rsvd2; /** Reserved. **/
+		};
+/** TX Write-back status structure **/ //(Table 12 in QDMA HW spec)
+		struct {
+			volatile uint16_t	tx_err; /** Producer-index **/
+			volatile uint16_t	tx_cidx; /** Consumer-index **/
+			volatile uint32_t	tx_pidx; /** Reserved. **/
+		};
+	};
 };
 
 struct qdma_pkt_stats {
