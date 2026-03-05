@@ -30,7 +30,7 @@
 
 cflags += ['-DRTE_LIBRTE_QDMA_PMD']
 cflags += ['-DDMA_BRAM_SIZE=524288']
-cflags += ['-finstrument-functions']
+#cflags += ['-finstrument-functions']
 
 includes += include_directories('.')
 includes += include_directories('qdma_access')
