@@ -54,6 +54,7 @@ struct qdma_rx_queue {
 
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 uint16_t get_cidx(void *rx_queue);
+uint16_t get_cidx_tx(void *tx_queue);
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
                                      uint32_t *tag);
@@ -69,7 +70,7 @@ int rearm_c2h_ring_bypass(void* rxq);
 int rearm_c2h_ring_bypass_tx(void* rxq, void* txq);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
 uint16_t qdma_xmit_pkts_bypass(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
-void print_c2h_ring_status(void *rxqueue);
+void print_c2h_ring_status(void *rxqueue,void *txqueue);
 
 struct rte_eth_dev *dev=NULL;
 uint16_t pending;
@@ -435,11 +436,11 @@ static void print_stats(void) {
   prev_cmpl_error_dup=cmpl_error_dup;
   prev_debug_error=debug_error;
   /*if (cms_rx_queue_per_lcore>1)
-	  for (int q=0; q<2; q++) {
+	  for (int q=0; q<1; q++) {
 		  printf("==========Q=%d=========\n",q);
-		  print_c2h_ring_status((void*)dev->data->rx_queues[q]);
+		  print_c2h_ring_status((void*)dev->data->rx_queues[q],(void*)dev->data->tx_queues[q]);
 	  }
-  */    
+  */
   uint32_t full_counter= qdma_reg_read_usr(dev,0x514C);
   
   printf("full_counter: %u\n",full_counter);    
@@ -449,11 +450,13 @@ static void print_stats(void) {
   printf("\n====================================================\n");
   
   for (int q=0; q<2; q++) {
-	  uint32_t pidx = get_bypass_pidx(dev, q) % 1024;
+	  uint32_t counter = get_bypass_pidx(dev, q) & 0x0ffff;
+    uint32_t pidx = get_bypass_pidx(dev, q) % 1024;
 	  uint32_t cidx = get_bypass_cidx(dev, q);
 
-	  printf("BYPASS (%d) pidx: %u, cidx: %u",q, pidx, cidx);
+	  printf("BYPASS (%d) pidx: %u cidx: %u counter: %u",q, pidx, cidx,counter);
 	  if (pidx==cidx) printf("  (EMPTY) ");
+    if ((pidx+1==cidx) || (pidx==1023 && cidx==0)) printf("  (FULL) ");
 	  printf("\n");
   }
 
@@ -660,9 +663,9 @@ static void cms_main_loop(void) {
 		    portid = qconf->rx_port_list[i];
 		    for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
           if (bypass && retransmit) {
-            rearm_c2h_ring_bypass_tx(dev->data->rx_queues[q],dev->data->tx_queues[q]);
-            uint16_t cidx = get_cidx(dev->data->rx_queues[q]);
-            update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // update cidx to rearm the ring
+            rearm_c2h_ring_bypass(dev->data->rx_queues[q]); // rearm CMPT ring
+            uint16_t cidx = get_cidx_tx(dev->data->tx_queues[q]); //read updated cidx from TX queue
+            update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // to rearm the bypass ring with cidx
           }
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
@@ -1213,8 +1216,10 @@ static void signal_handler(int signum) {
 	  rte_wmb();
 	  val= qdma_reg_read(dev,0x1800C);
     printf("cidx: %d\n",val &0x0ffff);*/
-    uint16_t cidx = get_cidx(dev->data->rx_queues[0]);
-    update_cidx(dev, 0, cidx, prefetch_tag[0]); // update cidx to rearm the ring
+    for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
+      uint16_t cidx = get_cidx(dev->data->rx_queues[q]);
+      update_cidx(dev, q, cidx, prefetch_tag[q]); // update cidx to rearm the ring
+    }
     printf("SIGQUIT received\n");
   }
 }
