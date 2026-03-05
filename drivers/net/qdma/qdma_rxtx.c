@@ -36,6 +36,7 @@
 #include "qdma_access_common.h"
 
 #include <fcntl.h>
+#include <stdint.h>
 #include <unistd.h>
 #include "qdma_rxtx.h"
 #include "qdma_devops.h"
@@ -539,12 +540,20 @@ static int process_cmpt_ring(struct qdma_rx_queue *rxq,
 	return 0;
 }
 
+uint16_t get_cidx_tx(void *tx_queue)
+{
+	struct qdma_tx_queue *txq = tx_queue;
+
+	return txq->wb_status->tx_cidx;
+}
+
 uint16_t get_cidx(void *rx_queue)
 {
 	struct qdma_rx_queue *rxq = rx_queue;
 
 	return rxq->cmpt_cidx_info.wrb_cidx;
 }
+
 
 static uint32_t rx_queue_count(void *rx_queue)
 {
@@ -669,7 +678,7 @@ qdma_dev_rx_descriptor_status(void *rx_queue, uint16_t offset)
 
 /* Update mbuf for a segmented packet */
 static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
-		uint16_t pkt_length, uint16_t *tail)
+		uint16_t pkt_length, uint16_t *tail, uint16_t wrap)
 {
 	struct rte_mbuf *mb;
 	struct rte_mbuf *first_seg = NULL;
@@ -683,6 +692,8 @@ static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
 		//sal: cambio qui per mantenere i descrittori!
 		if (rxq->en_bypass && rxq->en_bypass_prefetch)  {
 			id++;
+			if (wrap==1) id -= 256;
+			if (wrap==2) id -= 512;
 		}	
 		else
 			rxq->sw_ring[id++] = NULL;
@@ -773,17 +784,18 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 	uint16_t pkt_length;
 	uint16_t pkt_id;
 	uint16_t count = 0;
+	uint16_t wrap=0;
 	while (count < nb_pkts) {
 		pkt_length = qdma_ul_get_cmpt_pkt_len(
 					&rxq->cmpt_data[count]);
 		pkt_id=qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
+		wrap=qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);	
 		if (pkt_length) {
 			rxq->stats.pkts++;
 			rxq->stats.bytes += pkt_length;
 			mb = prepare_segmented_packet(rxq,
-					pkt_length, &rxq->rx_tail);
+					pkt_length, &rxq->rx_tail,wrap);
 			mb->timesync=pkt_id;
-			mb->dynfield1[0]=qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);	
 			rx_pkts[count_pkts++] = mb;
 		}
 		count++;
@@ -792,21 +804,21 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 	return count_pkts;
 }
 
-void print_c2h_ring_status(void *rxqueue)
+void print_c2h_ring_status(void *rxqueue,void *txqueue)
 {
 	struct qdma_rx_queue* rxq = (struct qdma_rx_queue*)rxqueue;
-	printf("WB status: 0x%x\n", (rxq->wb_status->rsvd2 >>3));
+	struct qdma_tx_queue* txq = (struct qdma_tx_queue*)txqueue;
+	printf("WB status: 0x%x\n", (rxq->wb_status->rsvd2 >>3)); //[63:32]
+                                                         //cidx        //[31:16] cidx
+														 //pidx        //[15:0] pidx                                    
 	printf("--------------------\n");
-	printf("WB CMPL PIDX =%d\n", rxq->wb_status->pidx);	
-	printf("RX RING TAIL =%d\n", rxq->rx_tail);
-	printf("SW RING PIDX =%d\n", rxq->q_pidx_info.pidx);
-	printf("--------------------\n");
-
-	printf("SW CMPL CIDX =%d\n", rxq->cmpt_cidx_info.wrb_cidx);
 	int32_t val=qdma_reg_read(rxq->dev,0x1800C);
 	printf("HW CMPL CIDX =%d\n",val &0x0ffff);
 	printf("WB CMPL CIDX =%d\n",rxq->wb_status->cidx);
-	
+	printf("SW CMPL CIDX =%d\n", rxq->cmpt_cidx_info.wrb_cidx);
+	printf("WB CMPL PIDX =%d\n", rxq->wb_status->pidx);	
+	printf("--------------------\n");
+
 	int32_t diff = rxq->wb_status->pidx - rxq->cmpt_cidx_info.wrb_cidx;
 	if (diff<0) diff +=1024;
 	printf("SW diff (PIDX-CIDX): %d\n", diff);
@@ -819,8 +831,18 @@ void print_c2h_ring_status(void *rxqueue)
 	if (diff<0) diff +=1024;
 	printf("WB diff (PIDX-CIDX): %d\n", diff);
 
+    printf("------TX QUEUE --------------\n");
+    
+	printf("TX RING WB CIDX =%d\n", txq->wb_status->tx_cidx);
+	printf("TX RING WB PIDX =%d\n", txq->wb_status->tx_pidx);
+    printf("TX WB status:    %d\n", txq->wb_status->tx_err);
 	
-	
+	printf("SW TX RING PIDX =%d\n", txq->q_pidx_info.pidx);
+    printf("--------------------\n");
+
+	printf("SW RX RING PIDX =%d\n", rxq->q_pidx_info.pidx);
+	printf("SW RX RING TAIL =%d\n", rxq->rx_tail);
+		
 	printf("nb_rx_desc = %d\n", rxq->nb_rx_desc);
 	printf("nb_rx_cmpt_desc = %d\n", rxq->nb_rx_cmpt_desc);
 }
@@ -851,20 +873,22 @@ int rearm_c2h_ring_bypass(void *rxqueue)
 	return 0;
 }
 
+/*
 int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue)
 {
 	struct qdma_rx_queue* rxq = (struct qdma_rx_queue*)rxqueue;
 	struct qdma_tx_queue* txq = (struct qdma_tx_queue*)txqueue;
 	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
-	uint16_t cidx=txq->wb_status->cidx;
+	//uint16_t cidx=txq->wb_status->tx_cidx;
 	//printf("TX pidx = %d\n",txq->q_pidx_info.pidx);
 	//printf("TX cidx = %d\n",cidx);
 	
-	struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info=rxq->cmpt_cidx_info;
+	//struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info=rxq->cmpt_cidx_info;
 
-	//printf("CMPT cidx = %d\n",rxq->cmpt_cidx_info.wrb_cidx);
+	//printf("original CMPT cidx = %d\n",rxq->cmpt_cidx_info.wrb_cidx);
+	//printf("TX cidx = %d\n",cidx);
 	//rxq->cmpt_cidx_info.wrb_cidx=cidx;
-	cmpt_cidx_info.wrb_cidx=cidx;
+	//cmpt_cidx_info.wrb_cidx=cidx;
 	//printf("Rearming C2H ring with TX cidx = %d\n",cidx);
 	rte_wmb();
     qdma_dev->hw_access->qdma_queue_cmpt_cidx_update(rxq->dev,
@@ -875,7 +899,7 @@ int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue)
 	return 0;
 
 }
-
+*/
 /* Populate C2H ring with new buffers */
 static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
 {
