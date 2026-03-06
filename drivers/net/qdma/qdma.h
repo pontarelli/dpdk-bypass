@@ -184,6 +184,7 @@ struct qdma_rx_queue {
 	struct rte_mbuf		**sw_ring; /**< address of RX software ring. */
 	struct rte_eth_dev	*dev;
 
+	uint8_t			wrap;
 	uint16_t		rx_tail;
 	uint16_t		cmpt_desc_len;
 	uint16_t		rx_buff_size;

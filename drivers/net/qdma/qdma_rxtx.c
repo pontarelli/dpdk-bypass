@@ -550,8 +550,10 @@ uint16_t get_cidx_tx(void *tx_queue)
 uint16_t get_cidx(void *rx_queue)
 {
 	struct qdma_rx_queue *rxq = rx_queue;
+    
+	uint16_t cidx=rxq->rx_tail; //rxq->cmpt_cidx_info.wrb_cidx;
 
-	return rxq->cmpt_cidx_info.wrb_cidx;
+	return cidx;
 }
 
 
@@ -692,8 +694,12 @@ static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
 		//sal: cambio qui per mantenere i descrittori!
 		if (rxq->en_bypass && rxq->en_bypass_prefetch)  {
 			id++;
-			if (wrap==1) id -= 256;
-			if (wrap==2) id -= 512;
+			if (unlikely(wrap==1)) {
+				id =(id>=256)? (id -256) : (id+rxq->nb_rx_desc-257);
+			}
+			if (unlikely(wrap==2)) {
+				id =(id>=512)? (id -512) : (id+rxq->nb_rx_desc-513);
+			}
 		}	
 		else
 			rxq->sw_ring[id++] = NULL;
@@ -790,6 +796,9 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 					&rxq->cmpt_data[count]);
 		pkt_id=qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
 		wrap=qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);	
+		if (wrap>0) {
+			rxq->wrap=wrap;
+		}
 		if (pkt_length) {
 			rxq->stats.pkts++;
 			rxq->stats.bytes += pkt_length;
@@ -800,7 +809,6 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 		}
 		count++;
 	}
-
 	return count_pkts;
 }
 

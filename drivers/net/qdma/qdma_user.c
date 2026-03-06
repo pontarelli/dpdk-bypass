@@ -88,7 +88,7 @@ uint16_t qdma_ul_get_cmpt_pkt_id(void *ul_cmpt_entry)
 
 uint16_t qdma_ul_get_cmpt_rsvd2(void *ul_cmpt_entry)
 {
-	return (((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->rsvd2) & 0x1F;
+	return (((union qdma_ul_st_cmpt_ring *)ul_cmpt_entry)->rsvd2) & 0x03;
 }
 
 uint64_t qdma_ul_get_cmpt_data(void *ul_cmpt_entry)
