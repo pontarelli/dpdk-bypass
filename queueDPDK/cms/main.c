@@ -54,7 +54,7 @@ struct qdma_rx_queue {
 
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 uint16_t get_cidx(void *rx_queue);
-uint16_t get_cidx_tx(void *tx_queue);
+uint16_t get_cidx_tx(void *tx_queue,bool elastic);
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
                                      uint32_t *tag);
@@ -70,6 +70,7 @@ int rearm_c2h_ring_bypass(void* rxq);
 int rearm_c2h_ring_bypass_tx(void* rxq, void* txq);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
 uint16_t qdma_xmit_pkts_bypass(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+uint16_t qdma_xmit_pkts(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
 void print_c2h_ring_status(void *rxqueue,void *txqueue);
 
 struct rte_eth_dev *dev=NULL;
@@ -221,6 +222,7 @@ bool dump = false;
 bool bypass = false;
 uint8_t freerunning = 0; /* cmpt overflow check mode: 0=disabled, 1=enabled */
 bool debug = false;
+bool elastic = false;
 bool retransmit = false;
 uint64_t phys_addr;
 
@@ -319,7 +321,7 @@ uint32_t miss = 0;
 uint32_t total = 0;
 uint32_t empty = 0;
 uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used to detect packet loss */
-uint16_t sw_debug_id[2048] = {0}; /* software packet ID for each queue, used to detect packet loss */
+uint32_t sw_debug_id[2048] = {1}; /* software packet ID for each queue, used to detect packet loss */
 
 bool aggressive = false; /* aggressive mode disabled by default */
 static unsigned prefetch_distance =
@@ -399,9 +401,6 @@ static void print_stats(void) {
       (unsigned long long)(total_packets_rx - total_packets_rx_prev),
       (unsigned long long)total_packets_dropped,
       (unsigned long long)(total_packets_dropped - total_packets_dropped_prev));
-  printf("\nspin time: %u\n", spin_time);
-  printf("miss: %u\n", miss);
-  printf("empty: %u\n", empty);
   printf("total: %u\n", total);
   if (aggressive)
     printf("With aggressive policy\n");
@@ -423,6 +422,10 @@ static void print_stats(void) {
     printf("With freerunning cmpt overflow check\n");
   else
     printf("Without freerunning cmpt overflow check\n");
+  if (elastic)
+    printf("With elastic ring\n");
+  else
+    printf("Without elastic ring\n");
 
   if (cms_rx_queue_per_lcore==1) {
     printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error, cmpl_error - prev_cmpl_error);
@@ -435,12 +438,12 @@ static void print_stats(void) {
   prev_cmpl_error_seq=cmpl_error_seq;
   prev_cmpl_error_dup=cmpl_error_dup;
   prev_debug_error=debug_error;
-  /*if (cms_rx_queue_per_lcore>1)
+  //if (cms_rx_queue_per_lcore>1)
 	  for (int q=0; q<1; q++) {
 		  printf("==========Q=%d=========\n",q);
 		  print_c2h_ring_status((void*)dev->data->rx_queues[q],(void*)dev->data->tx_queues[q]);
 	  }
-  */
+  
   uint32_t full_counter= qdma_reg_read_usr(dev,0x514C);
   
   printf("full_counter: %u\n",full_counter);    
@@ -453,10 +456,11 @@ static void print_stats(void) {
 	  uint32_t counter = get_bypass_pidx(dev, q) & 0x0ffff;
     uint32_t pidx = get_bypass_pidx(dev, q) % 1024;
 	  uint32_t cidx = get_bypass_cidx(dev, q);
-
+    int32_t level=pidx-cidx;
 	  printf("BYPASS (%d) pidx: %u cidx: %u counter: %u",q, pidx, cidx,counter);
 	  if (pidx==cidx) printf("  (EMPTY) ");
-    if ((pidx+1==cidx) || (pidx==1023 && cidx==0)) printf("  (FULL) ");
+    else if ((pidx+1==cidx) || (pidx==1023 && cidx==0)) printf("  (FULL) ");
+    else printf("  LEVEL: %d", level);
 	  printf("\n");
   }
 
@@ -662,11 +666,6 @@ static void cms_main_loop(void) {
 	    for (i = 0; i < qconf->n_rx_port; i++) {
 		    portid = qconf->rx_port_list[i];
 		    for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
-          if (bypass && retransmit) {
-            rearm_c2h_ring_bypass(dev->data->rx_queues[q]); // rearm CMPT ring
-            uint16_t cidx = get_cidx_tx(dev->data->tx_queues[q]); //read updated cidx from TX queue
-            update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // to rearm the bypass ring with cidx
-          }
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
 			    port_statistics[portid][q].rx += nb_rx;
@@ -700,8 +699,17 @@ static void cms_main_loop(void) {
             }
 
 	          if (debug) {
+              /*
+              uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
+              printf("----------------------------------------------------\n");
+              for (size_t i = 0; i < 64; i++) {
+				        printf("%02X ", *(pkt_data + i));
+				      }
+				      printf("\n");
+              printf("----------------------------------------------------\n");
+              */
               uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
-              int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
+              //int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
               uint32_t payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+35);
               uint16_t qid= *(uint16_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+26);
               if (qid!=q) {
@@ -710,21 +718,21 @@ static void cms_main_loop(void) {
                 printf("----------------------------------------------------\n");
               }
               if (pkt_len > 64) {
-                payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+95);
+                //payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+95);
                 payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+99);
               }
-					    payload_id= payload_id & 0x0FFFF; // mask to 16 bits
-              if ((((payload_id+1)& 0x0FFFF) != sw_debug_id[q]) && (payload_id != sw_debug_id[q])) {
+					    //payload_id= payload_id & 0x0FFFF; // mask to 16 bits
+              if (((payload_counter+1) != sw_debug_id[q]) && (payload_counter != sw_debug_id[q])) {
                 debug_error++;
                 
                 printf("----------------------------------------------------\n");
-                printf("Debug: Pkt ID mismatch! Payload: %ld, counted: %d diff: %ld\n", payload_id, sw_debug_id[q], (payload_id - sw_debug_id[q]) & 0x0FFFF);
+                printf("Debug: Pkt ID mismatch! Payload: %u, counted: %d diff: %d\n", payload_counter, sw_debug_id[q], (payload_counter - sw_debug_id[q]) & 0x0FFFF);
                 printf("debug error: %lu\n",debug_error);
                 printf("completion error: %lu\n",cmpl_error);
                 printf("total: %u\n",total);
                 printf("----------------------------------------------------\n");
                 
-                sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
+                //sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
               }
               if ((pkid+cmpl_error  &0x0FFFF) != (payload_counter &0x0FFFF)) {
                 printf("Debug: Packet ID mismatch between CMPL id and payload counter: payload_id: %u pkid:%d,  diff: %u\n", payload_counter &0x0FFFF, pkid, (payload_counter & 0x0FFFF)- pkid);
@@ -749,7 +757,7 @@ static void cms_main_loop(void) {
               */
 					    if (debug_addr != (int64_t) rte_pktmbuf_mtod(m, void *)) {
 						    printf("----------------------------------------------------\n");
-						    printf("pkt_cnt=%u Packet ID: %ld\n", total, payload_id);
+						    printf("pkt_cnt=%u Packet ID: %d\n", total, payload_counter);
 						    printf("Debug: Packet data address mismatch! Expected (phys_addr): %p, Actual (from payload): %p --", (void*)rte_pktmbuf_mtod(m, void *), (void*)debug_addr);
 						    printf("Diff %ld (%ld)\n", debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *),abs(debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *))/2368);
 						    printf("----------------------------------------------------\n");
@@ -811,24 +819,23 @@ static void cms_main_loop(void) {
 				    //count_add(m);
 				    //cms_simple_forward(m, portid);
 
-            if (!bypass) {
-              if (retransmit) {
-                cms_simple_forward(m, portid); 
-              } else {
+            if ((!bypass) && (!retransmit)) {
                 rte_pktmbuf_free(m);
-              }
             }
 				    measured_packets_rx++;
 			    }
 			    //TX burst
-          if (bypass && retransmit && nb_rx > 0) {
-            port_statistics[0][q].tx += qdma_xmit_pkts_bypass(dev->data->tx_queues[q], pkts_burst, nb_rx);
+          if ((retransmit) && (nb_rx > 0)) {
+            if (bypass) port_statistics[0][q].tx += qdma_xmit_pkts_bypass(dev->data->tx_queues[q], pkts_burst, nb_rx);
+            else port_statistics[0][q].tx += qdma_xmit_pkts(dev->data->tx_queues[q], pkts_burst, nb_rx);
           }
           
           // rearm!
-          if (bypass && !retransmit && (nb_rx > 0)) {
-               rearm_c2h_ring_bypass((void*)dev->data->rx_queues[q]);
-               uint16_t cidx = get_cidx(dev->data->rx_queues[q]);
+          //if (bypass && (nb_rx > 0)) {
+          if (bypass) {
+               uint16_t cidx;
+               if (!retransmit) cidx  = get_cidx(dev->data->rx_queues[q]);
+               else cidx  = get_cidx_tx(dev->data->tx_queues[q],elastic); //read updated cidx from TX queue
                update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // update cidx to rearm the ring
           }
           
@@ -965,6 +972,7 @@ static const char short_options[] = "c:" /* columns  */
                                     "a"  /* aggressive */
                                     "T" /* enable retransmit */
                                     "F" /* enable freerunning */        
+                                    "E" /* enable elastic buffer */        
                                     "P:" /* portmask  */
                                     "q:" /* number of queues */
                                     "p:" /* prefetch distance */
@@ -1062,6 +1070,9 @@ static int cms_parse_args(int argc, char **argv) {
       break;
     case 'T':
       retransmit=true;
+      break;
+    case 'E':  
+      elastic = true;
       break;
     case 'F':  
       freerunning = 1;
@@ -1217,7 +1228,10 @@ static void signal_handler(int signum) {
 	  val= qdma_reg_read(dev,0x1800C);
     printf("cidx: %d\n",val &0x0ffff);*/
     for (uint32_t q = 0; q < cms_rx_queue_per_lcore; q++) {
-      uint16_t cidx = get_cidx(dev->data->rx_queues[q]);
+
+      uint16_t cidx;
+      if (!retransmit) cidx  = get_cidx(dev->data->rx_queues[q]);
+      else cidx  = get_cidx_tx(dev->data->tx_queues[q],elastic); //read updated cidx from TX queue
       update_cidx(dev, q, cidx, prefetch_tag[q]); // update cidx to rearm the ring
     }
     printf("SIGQUIT received\n");
@@ -1560,17 +1574,24 @@ int main(int argc, char **argv) {
         phys_addr = get_desc(dev, qid, 0);
         printf("Phys addr %08lx\n", phys_addr);
         qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag[qid &qmask], 1, nb_rxd);
-        if (debug) qdma_write_bypass_reg_debug(dev, 1); 
       }
+      if (debug) 
+         qdma_write_bypass_reg_debug(dev, 1); 
       
-      if (freerunning) {
-        qdma_write_bypass_reg_debug(dev, 2); 
-        if (debug) qdma_write_bypass_reg_debug(dev, 3); 
-      }
-      if (!bypass) 
-	      qdma_write_bypass_reg_debug(dev, 2); 
+      if (freerunning && debug) 
+         qdma_write_bypass_reg_debug(dev, 3); 
+      
+      if (freerunning && !debug) 
+         qdma_write_bypass_reg_debug(dev, 2); 
+        
+      if (elastic && !debug)
+         qdma_write_bypass_reg_debug(dev, 4); 
 
-      //qdma_write_bypass_reg_debug(dev, 2); 
+      if (elastic && debug)
+        qdma_write_bypass_reg_debug(dev, 5); 
+
+      
+        //qdma_write_bypass_reg_debug(dev, 2); 
       
       //reset counters
       qdma_bypass_clear_counters(dev);
@@ -1694,3 +1715,4 @@ int main(int argc, char **argv) {
 
   return ret;
 }
+
