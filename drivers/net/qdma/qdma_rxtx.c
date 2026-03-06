@@ -175,6 +175,76 @@ static int reclaim_tx_mbuf(struct qdma_tx_queue *txq,
 	return fl_desc;
 }
 
+static int reclaim_tx_mbuf_bypass(struct qdma_tx_queue *txq)
+{
+	int fl_desc = 0;
+	uint16_t count;
+	struct rte_mbuf *mb;
+	int id;
+	int rx_tail=txq->rx_tail; 
+	uint16_t cidx = txq->wb_status->cidx;
+	
+	id = txq->tx_fl_tail;
+	fl_desc = (int)cidx - id;
+	//if (rx_tail != id) printf("rx tail: %d  fl tail %d\n",rx_tail,id);
+	if (fl_desc < 0)
+		fl_desc += (txq->nb_tx_desc - 1);
+	if ((id + fl_desc) < (txq->nb_tx_desc - 1)) {
+		for (count = 0; count < ((uint16_t)fl_desc & 0xFFFF);
+				count++) {
+			rx_tail++;
+			mb=txq->sw_ring[id];
+			if (mb->dynfield1[0] == 1) { //wrap bypass desc
+				txq->tx_wraps256++;
+				rx_tail =(rx_tail>=256)? (rx_tail -256) : (rx_tail+txq->nb_tx_desc-257);
+			}
+			if (mb->dynfield1[0] == 2) { //wrap bypass desc
+				txq->tx_wraps512++;
+				rx_tail =(rx_tail>=512)? (rx_tail -512) : (rx_tail+txq->nb_tx_desc-513);
+			}
+			id++;
+		}
+	} else {
+		fl_desc -= (txq->nb_tx_desc - 1 - id);
+		for (; id < (txq->nb_tx_desc - 1); id++) {
+			rx_tail++;
+			mb=txq->sw_ring[id];
+			if (mb->dynfield1[0] == 1) { //wrap bypass desc
+				txq->tx_wraps256++;
+				rx_tail =(rx_tail>=256)? (rx_tail -256) : (rx_tail+txq->nb_tx_desc-257);
+			}
+			if (mb->dynfield1[0] == 2) { //wrap bypass desc
+				txq->tx_wraps512++;
+				rx_tail =(rx_tail>=512)? (rx_tail -512) : (rx_tail+txq->nb_tx_desc-513);
+			}
+		}
+
+		id -= (txq->nb_tx_desc - 1);
+		for (count = 0; count < ((uint16_t)fl_desc & 0xFFFF);
+				count++) {
+			rx_tail++;
+			mb=txq->sw_ring[id];
+			if (mb->dynfield1[0] == 1) { //wrap bypass desc
+				txq->tx_wraps256++;
+				rx_tail =(rx_tail>=256)? (rx_tail -256) : (rx_tail+txq->nb_tx_desc-257);
+			}
+			if (mb->dynfield1[0] == 2) { //wrap bypass desc
+				txq->tx_wraps512++;
+				rx_tail =(rx_tail>=512)? (rx_tail -512) : (rx_tail+txq->nb_tx_desc-513);
+			}
+			id++;
+		}
+	}
+
+	txq->tx_fl_tail = id;
+	//rx_tail=txq->tx_fl_tail; //(OK)
+	if (rx_tail >= (txq->nb_tx_desc -1))
+		rx_tail -= (txq->nb_tx_desc -1);
+	txq->rx_tail=rx_tail;
+	
+	return 0;
+}
+
 #ifdef TEST_64B_DESC_BYPASS
 static uint16_t qdma_xmit_64B_desc_bypass(struct qdma_tx_queue *txq,
 			struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
@@ -540,11 +610,12 @@ static int process_cmpt_ring(struct qdma_rx_queue *rxq,
 	return 0;
 }
 
-uint16_t get_cidx_tx(void *tx_queue)
+uint16_t get_cidx_tx(void *tx_queue, bool elastic)
 {
 	struct qdma_tx_queue *txq = tx_queue;
-
-	return txq->wb_status->tx_cidx;
+	if (!elastic) return txq->wb_status->tx_cidx; //senza wrap
+	reclaim_tx_mbuf_bypass(txq);
+	return txq->rx_tail; //txq->wb_status->tx_cidx; //con wrap
 }
 
 uint16_t get_cidx(void *rx_queue)
@@ -695,9 +766,11 @@ static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
 		if (rxq->en_bypass && rxq->en_bypass_prefetch)  {
 			id++;
 			if (unlikely(wrap==1)) {
-				id =(id>=256)? (id -256) : (id+rxq->nb_rx_desc-257);
+					rxq->rx_wraps256++;
+					id =(id>=256)? (id -256) : (id+rxq->nb_rx_desc-257);
 			}
 			if (unlikely(wrap==2)) {
+				rxq->rx_wraps512++;
 				id =(id>=512)? (id -512) : (id+rxq->nb_rx_desc-513);
 			}
 		}	
@@ -796,15 +869,13 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
 					&rxq->cmpt_data[count]);
 		pkt_id=qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
 		wrap=qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);	
-		if (wrap>0) {
-			rxq->wrap=wrap;
-		}
 		if (pkt_length) {
 			rxq->stats.pkts++;
 			rxq->stats.bytes += pkt_length;
 			mb = prepare_segmented_packet(rxq,
 					pkt_length, &rxq->rx_tail,wrap);
 			mb->timesync=pkt_id;
+			mb->dynfield1[0]=wrap;
 			rx_pkts[count_pkts++] = mb;
 		}
 		count++;
@@ -846,6 +917,12 @@ void print_c2h_ring_status(void *rxqueue,void *txqueue)
     printf("TX WB status:    %d\n", txq->wb_status->tx_err);
 	
 	printf("SW TX RING PIDX =%d\n", txq->q_pidx_info.pidx);
+	printf("SW TX FL TAIL =%d\n", txq->tx_fl_tail);
+	int fl_desc =  txq->wb_status->tx_cidx- txq->tx_fl_tail;
+	if (fl_desc < 0)
+		fl_desc += (txq->nb_tx_desc - 1);
+	printf("SW TX FL DESC =%d\n", fl_desc);
+
     printf("--------------------\n");
 
 	printf("SW RX RING PIDX =%d\n", rxq->q_pidx_info.pidx);
@@ -853,6 +930,12 @@ void print_c2h_ring_status(void *rxqueue,void *txqueue)
 		
 	printf("nb_rx_desc = %d\n", rxq->nb_rx_desc);
 	printf("nb_rx_cmpt_desc = %d\n", rxq->nb_rx_cmpt_desc);
+
+	printf("RX wraps 256: %d\n", rxq->rx_wraps256);
+	printf("RX wraps 512: %d\n", rxq->rx_wraps512);
+	printf("TX wraps 256: %d\n", txq->tx_wraps256);
+	printf("TX wraps 512: %d\n", txq->tx_wraps512);
+
 }
 /* Populate C2H ring with new buffers */
 //static 
@@ -881,33 +964,6 @@ int rearm_c2h_ring_bypass(void *rxqueue)
 	return 0;
 }
 
-/*
-int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue)
-{
-	struct qdma_rx_queue* rxq = (struct qdma_rx_queue*)rxqueue;
-	struct qdma_tx_queue* txq = (struct qdma_tx_queue*)txqueue;
-	struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
-	//uint16_t cidx=txq->wb_status->tx_cidx;
-	//printf("TX pidx = %d\n",txq->q_pidx_info.pidx);
-	//printf("TX cidx = %d\n",cidx);
-	
-	//struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info=rxq->cmpt_cidx_info;
-
-	//printf("original CMPT cidx = %d\n",rxq->cmpt_cidx_info.wrb_cidx);
-	//printf("TX cidx = %d\n",cidx);
-	//rxq->cmpt_cidx_info.wrb_cidx=cidx;
-	//cmpt_cidx_info.wrb_cidx=cidx;
-	//printf("Rearming C2H ring with TX cidx = %d\n",cidx);
-	rte_wmb();
-    qdma_dev->hw_access->qdma_queue_cmpt_cidx_update(rxq->dev,
-		qdma_dev->is_vf,
-		//rxq->queue_id, &rxq->cmpt_cidx_info);
-		rxq->queue_id, &cmpt_cidx_info);
-
-	return 0;
-
-}
-*/
 /* Populate C2H ring with new buffers */
 static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
 {
@@ -1437,7 +1493,7 @@ uint16_t qdma_xmit_pkts_bypass(struct qdma_tx_queue *txq, struct rte_mbuf **tx_p
 	/* Free transmitted mbufs back to pool */
 	//sal: cambio qui per mantenere i descrittori?
 	//reclaim_tx_mbuf(txq, cidx, 0);
-	txq->tx_fl_tail=cidx;
+	//txq->tx_fl_tail=cidx;
 
 	in_use = (int)id - cidx;
 	if (in_use < 0)

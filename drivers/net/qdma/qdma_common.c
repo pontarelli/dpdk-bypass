@@ -285,6 +285,7 @@ void qdma_reset_tx_queue(struct qdma_tx_queue *txq)
 	uint32_t sz;
 
 	txq->tx_fl_tail = 0;
+	txq->rx_tail = 0;
 	if (txq->st_mode) {  /** ST-mode **/
 		sz = sizeof(struct qdma_ul_st_h2c_desc);
 		/* Zero out HW ring memory */

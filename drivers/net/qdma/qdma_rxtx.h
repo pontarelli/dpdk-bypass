@@ -47,7 +47,7 @@ uint32_t get_mm_buff_size(void *queue_hndl);
 int rearm_c2h_ring_bypass(void* rxq);
 int rearm_c2h_ring_bypass_tx(void *rxqueue,void *txqueue);
 uint16_t get_cidx(void *rx_queue);
-uint16_t get_cidx_tx(void *tx_queue);
+uint16_t get_cidx_tx(void *tx_queue,bool elastic);
 void print_c2h_ring_status(void *rxqueue,void *txqueue);
 uint16_t get_pending_desc(void *rxqueue);
 

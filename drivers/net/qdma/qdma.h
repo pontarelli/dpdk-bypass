@@ -184,7 +184,8 @@ struct qdma_rx_queue {
 	struct rte_mbuf		**sw_ring; /**< address of RX software ring. */
 	struct rte_eth_dev	*dev;
 
-	uint8_t			wrap;
+	uint16_t		rx_wraps256;
+	uint16_t		rx_wraps512;
 	uint16_t		rx_tail;
 	uint16_t		cmpt_desc_len;
 	uint16_t		rx_buff_size;
@@ -248,6 +249,9 @@ struct qdma_tx_queue {
 	struct rte_mbuf			**sw_ring;/* SW ring virtual address*/
 	struct rte_eth_dev		*dev;
 	uint16_t			tx_fl_tail;
+	uint16_t		tx_wraps256;
+	uint16_t		tx_wraps512;
+	uint16_t			rx_tail;
 	uint16_t			tx_desc_pend;
 	uint16_t			nb_tx_desc; /* No of TX descriptors.*/
 	rte_spinlock_t			pidx_update_lock;

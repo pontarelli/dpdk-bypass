@@ -377,6 +377,8 @@ int qdma_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
     goto rx_setup_err;
   }
 
+  rxq->rx_wraps256 = 0;
+  rxq->rx_wraps512 = 0;
   rxq->queue_id = rx_queue_id;
   rxq->port_id = dev->data->port_id;
   rxq->func_id = qdma_dev->func_id;
