@@ -531,11 +531,11 @@ static int process_cmpt_ring(struct qdma_rx_queue *rxq,
 	// Update the CPMT CIDX
 	rxq->cmpt_cidx_info.wrb_cidx = rx_cmpt_tail;
 	
-	if (!(rxq->en_bypass && rxq->en_bypass_prefetch)) {
+	//if (!(rxq->en_bypass && rxq->en_bypass_prefetch)) {
 		qdma_dev->hw_access->qdma_queue_cmpt_cidx_update(rxq->dev,
 		qdma_dev->is_vf,
 		rxq->queue_id, &rxq->cmpt_cidx_info);
-	}
+	//}
 	
 	return 0;
 }
