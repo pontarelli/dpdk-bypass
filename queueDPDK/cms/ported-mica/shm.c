@@ -172,16 +172,22 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 			perror("");
 			assert(false);
 		}
+		printf("created file %s for page %zu\n", path, page_id);
 
+		printf("reserving page %zu with page size %zu\n", page_id, page_size);
 		void *p = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		printf("mmaped page %zu at virtual address %p\n", page_id, p);
+		
 
 		close(fd);
 
 		if (p == (void *)-1)
 			break;
 
+		printf("allocated page %zu at virtual address %p\n", page_id, p);
 		// this is required to cause a page fault and invoke actual memory allocation
 		*(size_t *)p = 0;
+		printf("touched page %zu at virtual address %p\n", page_id, p);
 
 		strncpy(mehcached_shm_pages[page_id].path, path, PATH_MAX);
 		mehcached_shm_pages[page_id].addr = p;
@@ -203,6 +209,7 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 		perror("");
 		assert(false);
 	}
+	printf("parsing /proc/self/numa_maps\n");
 
 	page_id = 0;
 	char buf[BUFSIZ];
@@ -211,12 +218,16 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 		if (fgets(buf, sizeof(buf), f) == NULL)
 			break;
 
+		// printf the content of buf
+		//printf("%s", buf);
 		size_t addr = strtoull(buf, NULL, 16);
 		// for (page_id = 0; page_id < num_allocated_pages; page_id++)
 		if (page_id < num_allocated_pages)
 		{
 			if (mehcached_shm_pages[page_id].addr == (void *)addr)
 			{
+				printf("found page %zu with virtual address %p in /proc/self/numa_maps\n", page_id, (void *)addr);
+				printf("line: %s", buf);
 				char *p = strstr(buf, " N");
 				if (p == NULL)
 					assert(false);
@@ -234,6 +245,7 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 			}
 		}
 	}
+	printf("detected NUMA mapping for %zu pages\n", page_id);
 	fclose(f);
 	if (page_id != num_allocated_pages)
 	{
@@ -329,7 +341,7 @@ mehcached_shm_init(size_t page_size, size_t num_numa_nodes, size_t num_pages_to_
 	// check if we have enough pages on each numa node
 	for (numa_node = 0; numa_node < num_numa_nodes; numa_node++)
 	{
-		if (num_reserved_pages[numa_node] != num_pages_per_numa_node)
+		if (num_reserved_pages[numa_node] < num_pages_per_numa_node)
 			printf("warning: could reserve only %zu pages (< %zu) on numa node %zu\n", num_reserved_pages[numa_node], num_pages_per_numa_node, numa_node);
 		printf("reserved %zu pages on numa node %zu\n", num_pages_per_numa_node, numa_node);
 	}
@@ -383,6 +395,7 @@ mehcached_shm_alloc(size_t length, size_t numa_node)
 		numa_node = 0;
 
 	}
+	printf("allocating shm entry with length %zu on numa node %zu\n", length, numa_node);
 	mehcached_shm_lock();
 
 	size_t entry_id;
@@ -425,6 +438,7 @@ mehcached_shm_alloc(size_t length, size_t numa_node)
 		free(mehcached_shm_entries[entry_id].pages);
 		memset(&mehcached_shm_entries[entry_id], 0, sizeof(mehcached_shm_entries[entry_id]));
 		mehcached_shm_unlock();
+		//ANDREA: commented out
 		return (size_t)-1;
 	}
 
@@ -668,6 +682,7 @@ mehcached_shm_malloc_contiguous(size_t size, size_t lcore)
     size = mehcached_shm_adjust_size(size);
     // size_t entry_id = mehcached_shm_alloc(size, (size_t)-1);
     // size_t entry_id = mehcached_shm_alloc(size, numa_node);
+	printf("alfksjdflkjadjfklsd\n");
     size_t entry_id = mehcached_shm_alloc(size, 0);
     if (entry_id == (size_t)-1)
     	return NULL;
@@ -719,6 +734,7 @@ mehcached_shm_malloc_striped(size_t size)
 
     // TODO: allocate 1 fewer page (i.e., only 1 page in total) when the total number of pages required is an odd numbered
 
+	printf("jfklasdjfjas\n");
     size_t entry_id[2];
     entry_id[0] = mehcached_shm_alloc(size_2, 0);
     if (entry_id[0] == (size_t)-1)

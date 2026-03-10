@@ -1537,7 +1537,7 @@ mehcached_table_init(struct mehcached_table *table, size_t num_buckets, size_t n
 #endif
 #ifdef MEHCACHED_ALLOC_DYNAMIC
     // TODO: support multiple dynamic allocs?
-    mehcached_dynamic_init(&table->alloc, pool_size, concurrent_table_read, concurrent_alloc_write, alloc_numa_nodes[0]);
+    mehcached_dynamic_init(&table->alloc, pool_size, concurrent_table_read, concurrent_alloc_write, table_numa_node);
 #endif
 
     mehcached_table_reset(table);

@@ -730,6 +730,38 @@ static void inline process_decryption(struct rte_mbuf *m)
 
 static void inline process_mica(struct rte_mbuf *m)
 {
+  if (table == NULL) {
+    const size_t umem_size = 512;
+    const size_t page_size = 1048576 * 2;
+		const size_t num_numa_nodes = 8;
+		const size_t num_pages_to_try = umem_size;
+		const size_t num_pages_to_reserve = umem_size - umem_size/8; 
+		size_t alloc_overhead = sizeof(struct mehcached_item);
+		
+		mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try, num_pages_to_reserve);
+		
+		table = &table_o;
+		size_t numa_nodes[] = {(size_t)-1};
+		// mehcached_table_init(table, 1, 1, 256, false, false, false, numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+    // Hardcoded 2 instead of numa_nodes[0]
+		mehcached_table_init(table, (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) / MEHCACHED_ITEMS_PER_BUCKET, 1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/(alloc_overhead + 8 + 8), false, false, false, 2, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+		assert(table);
+
+
+		char default_value[VALUE_SIZE];
+		memset(default_value, 'A', VALUE_SIZE-1);
+    	default_value[VALUE_SIZE-1] = '\0'; 
+
+		for(size_t i =0; i< NUM_KEYS; i++)
+		{
+			size_t key = i; 
+			default_keys [i] = key;
+
+			uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+			if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&default_value, sizeof(default_value), 0, false))
+				assert(false);
+		}
+  }
 	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 	struct iphdr *ip = (struct iphdr *)((uint8_t*)eth + sizeof(struct rte_ether_hdr));
 	int ip_header_len = ip->ihl * 4;
