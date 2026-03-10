@@ -731,7 +731,7 @@ static void inline process_decryption(struct rte_mbuf *m)
 static void inline process_mica(struct rte_mbuf *m)
 {
 	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-	struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+	struct iphdr *ip = (struct iphdr *)((uint8_t*)eth + sizeof(struct rte_ether_hdr));
 	int ip_header_len = ip->ihl * 4;
 	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(((uint8_t*)eth) + sizeof(struct rte_ether_hdr) + ip_header_len);
 	unsigned char *payload = (unsigned char *)(udp + 1);
