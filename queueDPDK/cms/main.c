@@ -6,6 +6,8 @@
 #include "rte_pmd_qdma.h"
 #include "load_balancer.h"
 #include "hashmap.h"
+#include "ported-mica/mehcached.h"
+#include "ported-mica/hash.h"
 #include "xxhash64.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -338,8 +340,8 @@ int mac_updating_flag = 1;
 int application = 0;
 
 // MICA
-//struct mehcached_table table_o;
-//struct mehcached_table *table;
+struct mehcached_table table_o;
+struct mehcached_table *table;
 
 #define NUM_KEYS 2000
 static int VALUE_SIZE = 256;
@@ -348,6 +350,12 @@ size_t default_keys [NUM_KEYS];
 int keys_index = 0;
 
 bool flag = false;
+
+// ids 
+int dummy_count = 0;
+
+// decryption
+int decryption_key =3;
 
 // Maglev
 
@@ -674,6 +682,100 @@ static void inline process_packet_maglev(struct rte_mbuf *m)
 
 }
 
+const char *nat_ip = "203.0.113.5";
+uint16_t nat_port = 12345;
+
+static void inline process_nat(struct rte_mbuf *m)
+{
+	// parse headers
+	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+  int ip_header_len = ip->ihl * 4;
+	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(eth + sizeof(struct rte_ether_hdr *) + ip_header_len);
+
+  // Change IP and port (Assuming SNAT;)
+  ip->saddr = inet_addr(nat_ip);
+  udp->src_port = htons(nat_port);
+}
+
+static void inline process_ids(struct rte_mbuf *m)
+{
+
+	unsigned char *pkt = rte_pktmbuf_mtod(m, unsigned char *);
+	int length = rte_pktmbuf_pkt_len(m);
+	for(int i =0; i<length;i+=64)
+	{
+		if(pkt[i]=='a')
+			dummy_count++;
+	}
+}
+
+static void inline process_decryption(struct rte_mbuf *m)
+{
+
+	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+    struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+    int ip_header_len = ip->ihl * 4;
+    struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(((uint8_t*)eth) + sizeof(struct rte_ether_hdr *) + ip_header_len);
+    unsigned char *payload = (unsigned char *)(udp + 1);
+    int udp_length = ntohs(udp->dgram_len);
+    int payload_len = udp_length - sizeof(struct rte_udp_hdr);
+
+	
+	for(int i =0; i< payload_len; i++)
+		payload[i] = payload[i] + decryption_key;
+
+}
+
+
+static void inline process_mica(struct rte_mbuf *m)
+{
+	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+	int ip_header_len = ip->ihl * 4;
+	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(((uint8_t*)eth) + sizeof(struct rte_ether_hdr) + ip_header_len);
+	unsigned char *payload = (unsigned char *)(udp + 1);
+	int udp_length = ntohs(udp->dgram_len);
+	int payload_len = udp_length - sizeof(struct rte_udp_hdr);
+	
+	size_t key;
+	char value[VALUE_SIZE];
+	
+	// get key
+	memcpy(&key, payload, sizeof(size_t));
+	flag = !flag;
+	key = default_keys[keys_index];
+	keys_index = (keys_index+1) % NUM_KEYS;
+
+	// GET 
+	if(flag)
+	{
+		uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+		size_t value_length = sizeof(value);
+
+		if (mehcached_get(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (uint8_t *)&value, &value_length, NULL, false))
+			assert(value_length == sizeof(value));
+
+		// send value
+		memcpy(payload + sizeof(size_t), &value, VALUE_SIZE);
+	}
+	
+	// STORE 
+	else 
+	{
+		memcpy(value, payload + sizeof(size_t), VALUE_SIZE);
+		value[VALUE_SIZE-1] = '\0';
+		uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+		if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&value, sizeof(value), 0, true))
+			assert(false);
+
+		// send acknowledgement
+		memcpy(payload + sizeof(size_t),&value, VALUE_SIZE);
+		
+	}
+}
+
+
 static void inline process_packet(struct rte_mbuf *m)
 {
   switch (application) {
@@ -690,6 +792,16 @@ static void inline process_packet(struct rte_mbuf *m)
       break;
     case 4:  //nat
       process_nat(m);
+      break;
+    case 5: 
+      process_ids(m);
+      break;
+    case 6:
+      process_decryption(m);
+      break;
+    case 7:
+      process_mica(m);
+      break;
     default:
       l2_forward(m, 0);
       break;
