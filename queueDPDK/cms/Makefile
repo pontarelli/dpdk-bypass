@@ -5,7 +5,7 @@
 APP = dol
 
 # all source are stored in SRCS-y
-SRCS-y := main.c hashmap.c ported-mica/*.c
+SRCS-y := main.c hashmap.c ported-mica/*.c nitrosketch/minheap.c nitrosketch/xxhash.c
 
 # Build using pkg-config variables if possible
 ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)

@@ -2,12 +2,17 @@
  * Copyright(c) 2010-2016 Intel Corporation
  */
 
+#include "hashmap.h"
+#include "load_balancer.h"
+#include "nitrosketch/constants.h" // Include first
+#include "nitrosketch/geometric.h"
+#include "nitrosketch/minheap.h"
+#include "nitrosketch/nitrosketch.h"
+#include "nitrosketch/xxhash.h"
+#include "ported-mica/hash.h"
+#include "ported-mica/mehcached.h"
 #include "rte_ethdev_driver.h"
 #include "rte_pmd_qdma.h"
-#include "load_balancer.h"
-#include "hashmap.h"
-#include "ported-mica/mehcached.h"
-#include "ported-mica/hash.h"
 #include "xxhash64.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -72,11 +77,16 @@
 
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 uint16_t get_cidx(void *rx_queue);
-uint16_t get_cidx_tx(void *tx_queue,bool elastic);
+uint16_t get_cidx_tx(void *tx_queue, bool elastic);
 
-int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
-int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc);
-int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *addr, uint32_t *tag, uint8_t *valid, uint32_t *num_desc);
+int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
+                                     uint32_t *tag);
+int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid,
+                                      uint64_t addr, uint32_t tag,
+                                      uint8_t valid, uint32_t num_desc);
+int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid,
+                                     uint64_t *addr, uint32_t *tag,
+                                     uint8_t *valid, uint32_t *num_desc);
 int qdma_bypass_clear_counters(void *dev_hndl);
 int qdma_write_bypass_reg_debug(void *dev_hndl, uint8_t debug);
 uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst);
@@ -84,11 +94,10 @@ uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
 void qdma_reg_write(void *dev_hndl, uint32_t reg_offst, uint32_t val);
 void qdma_reg_write_usr(void *dev_hndl, uint32_t reg_offst, uint32_t val);
 void print_phys(struct rte_eth_dev *dev, uint16_t qid);
-uint16_t qdma_xmit_pkts_bypass(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
-uint16_t qdma_xmit_pkts(void* txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
-void print_c2h_ring_status(void *rxqueue,void *txqueue);
-
-
+uint16_t qdma_xmit_pkts_bypass(void *txq, struct rte_mbuf **tx_pkts,
+                               uint16_t nb_pkts);
+uint16_t qdma_xmit_pkts(void *txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+void print_c2h_ring_status(void *rxqueue, void *txqueue);
 
 struct countmin {
   uint64_t **values;
@@ -183,51 +192,47 @@ static void pcap_file_close(void) {
   }
 }
 
-
 /* update cidx */
 static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
-  
-  // Use the qid as the page index 
-	qdma_reg_write_usr(dev,QDMA_BYPASS_REG_TABLE_PAGE_INDEX,(uint32_t)(qid & 0x0FFFF));
+
+  // Use the qid as the page index
+  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+                     (uint32_t)(qid & 0x0FFFF));
 
   // Write  cidx, valid, tag
-  uint32_t val = (cidx<<8) | (0x1 << 7) | (tag & 0x3F);
-  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE+12, val);
-
-} 
+  uint32_t val = (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
+  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE + 12, val);
+}
 
 /* Read pidx */
 static uint32_t get_bypass_pidx(void *dev, uint16_t qid) {
-  
-  // Use the qid as the page index 
-	qdma_reg_write_usr(dev,QDMA_BYPASS_REG_TABLE_PAGE_INDEX,(uint32_t)(qid & 0x0FFFF));
+
+  // Use the qid as the page index
+  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+                     (uint32_t)(qid & 0x0FFFF));
 
   // Read  pidx
-  return qdma_reg_read_usr(dev, QDMA_BYPASS_REG_TABLE+16);
-  
-} 
+  return qdma_reg_read_usr(dev, QDMA_BYPASS_REG_TABLE + 16);
+}
 
 static uint32_t get_bypass_cidx(void *dev, uint16_t qid) {
-  
-  // Use the qid as the page index 
-	qdma_reg_write_usr(dev,QDMA_BYPASS_REG_TABLE_PAGE_INDEX,(uint32_t)(qid & 0x0FFFF));
+
+  // Use the qid as the page index
+  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+                     (uint32_t)(qid & 0x0FFFF));
 
   // Read  pidx
-  uint32_t val =qdma_reg_read_usr(dev, QDMA_BYPASS_REG_TABLE+12);
+  uint32_t val = qdma_reg_read_usr(dev, QDMA_BYPASS_REG_TABLE + 12);
   return (val >> 8) & 0x0FFFF;
-  
-} 
+}
 
-
-struct rte_eth_dev *dev=NULL;
+struct rte_eth_dev *dev = NULL;
 struct rte_eth_stats stats;
 
-uint32_t qmask=0x7;
+uint32_t qmask = 0x7;
 uint32_t prefetch_tag[2048];
-  
 
 uint16_t port_id = 0;
-
 
 struct countmin *cm;
 static volatile bool force_quit;
@@ -240,7 +245,6 @@ bool elastic = false;
 bool retransmit = false;
 uint64_t phys_addr;
 uint64_t end_time = 0;
-
 
 uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
@@ -301,38 +305,38 @@ struct port_statistics {
   uint64_t rx;
   uint64_t dropped;
 } __rte_cache_aligned;
-struct port_statistics port_stats[RTE_MAX_ETHPORTS]
-                                          [MAX_RX_QUEUE_PER_LCORE];
+struct port_statistics port_stats[RTE_MAX_ETHPORTS][MAX_RX_QUEUE_PER_LCORE];
 
 /* A tsc-based timer responsible for triggering statistics printout */
 static uint64_t timer_period = 1; /* default period is 1 second */
 
-uint64_t debug_error=0;
-uint64_t cmpl_error=0;
-uint64_t cmpl_error_seq=0;
-uint64_t prev_debug_error=0;
-uint64_t cmpl_error_dup=0;
-uint64_t prev_cmpl_error=0;
-uint64_t prev_cmpl_error_seq=0;
-uint64_t prev_cmpl_error_dup=0;
+uint64_t debug_error = 0;
+uint64_t cmpl_error = 0;
+uint64_t cmpl_error_seq = 0;
+uint64_t prev_debug_error = 0;
+uint64_t cmpl_error_dup = 0;
+uint64_t prev_cmpl_error = 0;
+uint64_t prev_cmpl_error_seq = 0;
+uint64_t prev_cmpl_error_dup = 0;
 uint32_t spin_time = 0;
 uint32_t miss = 0;
 uint32_t total = 0;
 uint32_t empty = 0;
-uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used to detect packet loss */
-uint32_t sw_debug_id[2048] = {1}; /* software packet ID for each queue, used to detect packet loss */
+uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used
+                           to detect packet loss */
+uint32_t sw_debug_id[2048] = {
+    1}; /* software packet ID for each queue, used to detect packet loss */
 
-uint32_t prefetch_distance =
-    4;                          /* prefetch distance for mbufs in burst */
+uint32_t prefetch_distance = 4; /* prefetch distance for mbufs in burst */
 uint32_t cms_columns = 1048576; /* number of columns in the count-min sketch */
-uint32_t num_hash=40;
-uint32_t num_rand=0;
+uint32_t num_hash = 40;
+uint32_t num_rand = 0;
 /* Print out statistics on packets dropped */
 uint64_t measured_packets_rx = 0;
 
 uint64_t measured_tick = 0;
-uint64_t rx_pkt_prev=0;
-  
+uint64_t rx_pkt_prev = 0;
+
 ////////////// Application variables  ////////////////
 
 /* MAC updating enabled by default */
@@ -346,16 +350,16 @@ struct mehcached_table *table;
 #define NUM_KEYS 2000
 static int VALUE_SIZE = 256;
 
-size_t default_keys [NUM_KEYS];
+size_t default_keys[NUM_KEYS];
 int keys_index = 0;
 
 bool flag = false;
 
-// ids 
+// ids
 int dummy_count = 0;
 
 // decryption
-int decryption_key =3;
+int decryption_key = 3;
 
 // Maglev
 
@@ -366,7 +370,6 @@ struct hashmap services;
 struct hashmap backends;
 struct hashmap maglev_tables;
 struct hashmap active_sessions;
-
 
 static void print_stats(void) {
   uint64_t total_packets_dropped = 0, total_packets_tx = 0,
@@ -402,17 +405,18 @@ static void print_stats(void) {
           port_stats[portid][q].dropped - prev_dropped[portid][q];
 
       if (!(diff_tx == 0 && diff_rx == 0 && diff_dropped == 0)) {
-        
-      printf("\nStatistics for port %u queue: %d ------------------------------"
-             "\nPackets sent:     %'20llu (diff: %'llu)"
-             "\nPackets received: %'20llu (diff: %'llu)"
-             "\nPackets dropped:  %'20llu (diff: %'llu)\n",
-             portid, q, (unsigned long long)port_stats[portid][q].tx,
-             (unsigned long long)diff_tx,
-             (unsigned long long)port_stats[portid][q].rx,
-             (unsigned long long)diff_rx,
-             (unsigned long long)port_stats[portid][q].dropped,
-             (unsigned long long)diff_dropped);
+
+        printf(
+            "\nStatistics for port %u queue: %d ------------------------------"
+            "\nPackets sent:     %'20llu (diff: %'llu)"
+            "\nPackets received: %'20llu (diff: %'llu)"
+            "\nPackets dropped:  %'20llu (diff: %'llu)\n",
+            portid, q, (unsigned long long)port_stats[portid][q].tx,
+            (unsigned long long)diff_tx,
+            (unsigned long long)port_stats[portid][q].rx,
+            (unsigned long long)diff_rx,
+            (unsigned long long)port_stats[portid][q].dropped,
+            (unsigned long long)diff_dropped);
       }
 
       total_packets_dropped += port_stats[portid][q].dropped;
@@ -422,7 +426,6 @@ static void print_stats(void) {
       prev_tx[portid][q] = port_stats[portid][q].tx;
       prev_rx[portid][q] = port_stats[portid][q].rx;
       prev_dropped[portid][q] = port_stats[portid][q].dropped;
-
     }
   }
   printf(
@@ -458,64 +461,72 @@ static void print_stats(void) {
   else
     printf("Without elastic ring\n");
 
-  if (rx_queue_per_lcore==1) {
-    printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error, cmpl_error - prev_cmpl_error);
-    printf("Seq Completion errors: %lu (diff:%'ld)\n", cmpl_error_seq, cmpl_error_seq - prev_cmpl_error_seq);
-    printf("Dup Completion errors: %lu (diff:%'ld)\n", cmpl_error_dup, cmpl_error_dup - prev_cmpl_error_dup);
+  if (rx_queue_per_lcore == 1) {
+    printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error,
+           cmpl_error - prev_cmpl_error);
+    printf("Seq Completion errors: %lu (diff:%'ld)\n", cmpl_error_seq,
+           cmpl_error_seq - prev_cmpl_error_seq);
+    printf("Dup Completion errors: %lu (diff:%'ld)\n", cmpl_error_dup,
+           cmpl_error_dup - prev_cmpl_error_dup);
   }
-  if (debug) printf("Debug errors: %lu (diff:%'ld)\n", debug_error, debug_error - prev_debug_error);
-  
-  prev_cmpl_error=cmpl_error;
-  prev_cmpl_error_seq=cmpl_error_seq;
-  prev_cmpl_error_dup=cmpl_error_dup;
-  prev_debug_error=debug_error;
+  if (debug)
+    printf("Debug errors: %lu (diff:%'ld)\n", debug_error,
+           debug_error - prev_debug_error);
+
+  prev_cmpl_error = cmpl_error;
+  prev_cmpl_error_seq = cmpl_error_seq;
+  prev_cmpl_error_dup = cmpl_error_dup;
+  prev_debug_error = debug_error;
   /*if (rx_queue_per_lcore>1)
-	  for (int q=0; q<1; q++) {
-		  printf("==========Q=%d=========\n",q);
-		  print_c2h_ring_status((void*)dev->data->rx_queues[q],(void*)dev->data->tx_queues[q]);
-	  }
+          for (int q=0; q<1; q++) {
+                  printf("==========Q=%d=========\n",q);
+                  print_c2h_ring_status((void*)dev->data->rx_queues[q],(void*)dev->data->tx_queues[q]);
+          }
   */
-  uint32_t full_counter= qdma_reg_read_usr(dev,0x514C);
-  
-  printf("full_counter: %u\n",full_counter);    
-  printf("full_counter+received: %'12lu\n",full_counter+measured_packets_rx);    
+  uint32_t full_counter = qdma_reg_read_usr(dev, 0x514C);
 
-  
+  printf("full_counter: %u\n", full_counter);
+  printf("full_counter+received: %'12lu\n", full_counter + measured_packets_rx);
+
   printf("\n====================================================\n");
-  
-  for (int q=0; q<2; q++) {
-	  uint32_t counter = get_bypass_pidx(dev, q) & 0x0ffff;
+
+  for (int q = 0; q < 2; q++) {
+    uint32_t counter = get_bypass_pidx(dev, q) & 0x0ffff;
     uint32_t pidx = get_bypass_pidx(dev, q) % 1024;
-	  uint32_t cidx = get_bypass_cidx(dev, q);
-    int32_t level=pidx-cidx;
-	  printf("BYPASS (%d) pidx: %u cidx: %u counter: %u",q, pidx, cidx,counter);
-	  if (pidx==cidx) printf("  (EMPTY) ");
-    else if ((pidx+1==cidx) || (pidx==1023 && cidx==0)) printf("  (FULL) ");
-    else printf("  LEVEL: %d", level);
-	  printf("\n");
+    uint32_t cidx = get_bypass_cidx(dev, q);
+    int32_t level = pidx - cidx;
+    printf("BYPASS (%d) pidx: %u cidx: %u counter: %u", q, pidx, cidx, counter);
+    if (pidx == cidx)
+      printf("  (EMPTY) ");
+    else if ((pidx + 1 == cidx) || (pidx == 1023 && cidx == 0))
+      printf("  (FULL) ");
+    else
+      printf("  LEVEL: %d", level);
+    printf("\n");
   }
 
-
   printf("\n====================================================\n");
-  
-  measured_tick++;
-  uint32_t val_l = qdma_reg_read_usr(dev,0xB020);
-  uint32_t val_h = qdma_reg_read_usr(dev,0xB024);
-  uint64_t rx_pkt = ((uint64_t)val_h <<32) | val_l;
-  printf("packets on q=0 : %'14lu\n",port_stats[0][0].rx);
-  printf("packets on q=1 : %'14lu\n",port_stats[0][1].rx);
-  printf("packets on q=2 : %'14lu\n",port_stats[0][2].rx);
-  printf("packets on q=3 : %'14lu\n",port_stats[0][3].rx);
 
-  printf("Packet Adapter received packets: %ld (diff: %'14ld)\n", rx_pkt, rx_pkt-rx_pkt_prev);  
+  measured_tick++;
+  uint32_t val_l = qdma_reg_read_usr(dev, 0xB020);
+  uint32_t val_h = qdma_reg_read_usr(dev, 0xB024);
+  uint64_t rx_pkt = ((uint64_t)val_h << 32) | val_l;
+  printf("packets on q=0 : %'14lu\n", port_stats[0][0].rx);
+  printf("packets on q=1 : %'14lu\n", port_stats[0][1].rx);
+  printf("packets on q=2 : %'14lu\n", port_stats[0][2].rx);
+  printf("packets on q=3 : %'14lu\n", port_stats[0][3].rx);
+
+  printf("Packet Adapter received packets: %ld (diff: %'14ld)\n", rx_pkt,
+         rx_pkt - rx_pkt_prev);
   rx_pkt_prev = rx_pkt;
-  uint32_t rx_pkt2 = qdma_reg_read_usr(dev,0x512C)-1; // start from 1 to sync with CMPL id
-  printf("QDMA Subsystem received packets: %d\n", rx_pkt2);  
-  printf("diff: %lu\n", rx_pkt-rx_pkt2);    
-  
+  uint32_t rx_pkt2 =
+      qdma_reg_read_usr(dev, 0x512C) - 1; // start from 1 to sync with CMPL id
+  printf("QDMA Subsystem received packets: %d\n", rx_pkt2);
+  printf("diff: %lu\n", rx_pkt - rx_pkt2);
+
   printf("prefetch distance: %u\n", prefetch_distance);
   printf("\n====================================================\n");
-  
+
   /* Reset previous statistics */
   total_packets_tx_prev = total_packets_tx;
   total_packets_rx_prev = total_packets_rx;
@@ -540,9 +551,6 @@ static void mac_updating(struct rte_mbuf *m, unsigned dest_portid) {
   /* src addr */
   rte_ether_addr_copy(&ports_eth_addr[dest_portid], &eth->s_addr);
 }
-
-
-
 
 static void cms_count_add(struct rte_mbuf *m) {
   struct rte_ether_hdr *eth;
@@ -572,7 +580,7 @@ static void cms_count_add(struct rte_mbuf *m) {
   } else {
     return; // not IPv4
   }
-  
+
   struct five_tuple {
     uint32_t src_ip;
     uint32_t dst_ip;
@@ -589,12 +597,12 @@ static void cms_count_add(struct rte_mbuf *m) {
       .proto = proto,
   };
 
-  uint64_t seed=0x12345678; // fixed seed for reproducibility
+  uint64_t seed = 0x12345678; // fixed seed for reproducibility
   for (uint32_t i = 0; i < num_rand; i++) {
-    seed +=rte_rand();
+    seed += rte_rand();
   }
   for (uint32_t i = 0; i < num_hash; i++) {
-    uint64_t h = xxhash64((const char *)&key, sizeof(key), seed+i);
+    uint64_t h = xxhash64((const char *)&key, sizeof(key), seed + i);
     uint32_t target_idx = h & (cms_columns - 1);
     cm->values[i][target_idx]++;
   }
@@ -602,245 +610,300 @@ static void cms_count_add(struct rte_mbuf *m) {
 
 static void l2_forward(struct rte_mbuf *m, unsigned portid) {
   unsigned dst_port;
-  
+
   dst_port = dst_ports[portid];
 
   if (mac_updating_flag)
     mac_updating(m, dst_port);
-
 }
 
-static void inline process_packet_maglev(struct rte_mbuf *m)
-{
+static void inline process_packet_maglev(struct rte_mbuf *m) {
 
-	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
   struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
   int ip_header_len = ip->ihl * 4;
-	struct udphdr *udp = (struct udphdr *)(eth + sizeof(struct rte_ether_hdr *) + ip_header_len);
+  struct udphdr *udp =
+      (struct udphdr *)(eth + sizeof(struct rte_ether_hdr *) + ip_header_len);
 
+  struct session_id sid = {0};
+  sid.saddr = ip->saddr;
+  sid.daddr = inet_addr("10.129.2.121");
+  sid.proto = ip->protocol;
+  sid.sport = udp->source;
+  sid.dport = htons(80);
 
-	struct session_id sid = { 0 };
-	sid.saddr = ip->saddr;
-	sid.daddr = inet_addr("10.129.2.121");
-	sid.proto = ip->protocol;
-	sid.sport = udp->source;
-	sid.dport = htons(80);
+  /* Look for known sessions */
+  struct replace_info *rep = hashmap_lookup_elem(&active_sessions, &sid);
+  if (rep) {
+    return;
+  }
 
+  /* New session, apply load balancing logic */
+  struct service_id srvid = {
+      .vaddr = sid.daddr, .vport = sid.dport, .proto = ip->protocol};
+  struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
+  if (!srvinfo) {
+    printf("ERROR: missing service --> DROPPING\n");
+    return;
+  }
 
-	/* Look for known sessions */
-	struct replace_info *rep = hashmap_lookup_elem(&active_sessions, &sid);
-	if (rep) {
-		return;
-	}
+  struct backend_id bkdid = {
+      .service = srvid,
+      .index =
+          ((struct maglev *)hashmap_lookup_elem(&maglev_tables, &srvid))
+              ->bkd_mapping[murmurhash(&sid, sizeof(struct session_id), 0) %
+                            MAGLEV_LOOKUP_SIZE]};
+  struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
+  if (!bkdinfo) {
+    printf("ERROR: missing backend --> DROPPING\n");
+    return;
+  }
 
-	/* New session, apply load balancing logic */
-	struct service_id srvid = { .vaddr =sid.daddr, .vport = sid.dport, .proto = ip->protocol };
-	struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
-	if (!srvinfo) {
-		printf("ERROR: missing service --> DROPPING\n");
-		return;
-	}
+  /* Store the forward session */
+  struct replace_info fwd_rep;
+  fwd_rep.dir = DIR_TO_BACKEND;
+  fwd_rep.addr = bkdinfo->addr;
+  fwd_rep.port = bkdinfo->port;
+  fwd_rep.bkdindex = bkdid.index;
+  memcpy(fwd_rep.mac_addr, &bkdinfo->mac_addr, sizeof(fwd_rep.mac_addr));
+  rep = &fwd_rep;
+  if (hashmap_insert_elem(&active_sessions, &sid, &fwd_rep) != 1) {
+    fprintf(stderr, "ERROR: unable to add forward session to map\n");
+    return;
+  }
 
-	struct backend_id bkdid = {
-		.service = srvid,
-		.index = ((struct maglev *)hashmap_lookup_elem(&maglev_tables, &srvid))
-				 ->bkd_mapping[murmurhash(&sid, sizeof(struct session_id), 0) % MAGLEV_LOOKUP_SIZE]
-	};
-	struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
-	if (!bkdinfo) {
-		printf("ERROR: missing backend --> DROPPING\n");
-		return;
-	}
-
-	/* Store the forward session */
-	struct replace_info fwd_rep;
-	fwd_rep.dir = DIR_TO_BACKEND;
-	fwd_rep.addr = bkdinfo->addr;
-	fwd_rep.port = bkdinfo->port;
-	fwd_rep.bkdindex = bkdid.index;
-	memcpy(fwd_rep.mac_addr, &bkdinfo->mac_addr, sizeof(fwd_rep.mac_addr));
-	rep = &fwd_rep;
-	if (hashmap_insert_elem(&active_sessions, &sid, &fwd_rep) != 1) {
-		fprintf(stderr, "ERROR: unable to add forward session to map\n");
-		return;
-	}
-
-	/* Store the backward session */
-	struct replace_info bwd_rep;
-	bwd_rep.dir = DIR_TO_CLIENT;
-	bwd_rep.addr = srvid.vaddr;
-	bwd_rep.port = srvid.vport;
-	memcpy(&bwd_rep.mac_addr, eth->s_addr.addr_bytes, sizeof(eth->s_addr));
-	sid.daddr = sid.saddr;
-	sid.dport = sid.sport;
-	sid.saddr = bkdinfo->addr;
-	sid.sport = bkdinfo->port;
-	if (hashmap_insert_elem(&active_sessions, &sid, &bwd_rep) != 1) {
-		fprintf(stderr, "ERROR: unable to add backward session to map\n");
-		return;
-	}
-
+  /* Store the backward session */
+  struct replace_info bwd_rep;
+  bwd_rep.dir = DIR_TO_CLIENT;
+  bwd_rep.addr = srvid.vaddr;
+  bwd_rep.port = srvid.vport;
+  memcpy(&bwd_rep.mac_addr, eth->s_addr.addr_bytes, sizeof(eth->s_addr));
+  sid.daddr = sid.saddr;
+  sid.dport = sid.sport;
+  sid.saddr = bkdinfo->addr;
+  sid.sport = bkdinfo->port;
+  if (hashmap_insert_elem(&active_sessions, &sid, &bwd_rep) != 1) {
+    fprintf(stderr, "ERROR: unable to add backward session to map\n");
+    return;
+  }
 }
 
 const char *nat_ip = "203.0.113.5";
 uint16_t nat_port = 12345;
 
-static void inline process_nat(struct rte_mbuf *m)
-{
-	// parse headers
-	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+static void inline process_nat(struct rte_mbuf *m) {
+  // parse headers
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
   struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
   int ip_header_len = ip->ihl * 4;
-	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(eth + sizeof(struct rte_ether_hdr *) + ip_header_len);
+  struct rte_udp_hdr *udp =
+      (struct rte_udp_hdr *)(eth + sizeof(struct rte_ether_hdr *) +
+                             ip_header_len);
 
   // Change IP and port (Assuming SNAT;)
   ip->saddr = inet_addr(nat_ip);
   udp->src_port = htons(nat_port);
 }
 
-static void inline process_ids(struct rte_mbuf *m)
-{
+static void inline process_ids(struct rte_mbuf *m) {
 
-	unsigned char *pkt = rte_pktmbuf_mtod(m, unsigned char *);
-	int length = rte_pktmbuf_pkt_len(m);
-	for(int i =0; i<length;i+=64)
-	{
-		if(pkt[i]=='a')
-			dummy_count++;
-	}
+  unsigned char *pkt = rte_pktmbuf_mtod(m, unsigned char *);
+  int length = rte_pktmbuf_pkt_len(m);
+  for (int i = 0; i < length; i += 64) {
+    if (pkt[i] == 'a')
+      dummy_count++;
+  }
 }
 
-static void inline process_decryption(struct rte_mbuf *m)
-{
+static void inline process_decryption(struct rte_mbuf *m) {
 
-	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-    struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
-    int ip_header_len = ip->ihl * 4;
-    struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(((uint8_t*)eth) + sizeof(struct rte_ether_hdr *) + ip_header_len);
-    unsigned char *payload = (unsigned char *)(udp + 1);
-    int udp_length = ntohs(udp->dgram_len);
-    int payload_len = udp_length - sizeof(struct rte_udp_hdr);
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+  int ip_header_len = ip->ihl * 4;
+  struct rte_udp_hdr *udp =
+      (struct rte_udp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr *) +
+                             ip_header_len);
+  unsigned char *payload = (unsigned char *)(udp + 1);
+  int udp_length = ntohs(udp->dgram_len);
+  int payload_len = udp_length - sizeof(struct rte_udp_hdr);
 
-	
-	for(int i =0; i< payload_len; i++)
-		payload[i] = payload[i] + decryption_key;
-
+  for (int i = 0; i < payload_len; i++)
+    payload[i] = payload[i] + decryption_key;
 }
 
-
-static void inline process_mica(struct rte_mbuf *m)
-{
+static void inline process_mica(struct rte_mbuf *m) {
   if (table == NULL) {
     const size_t umem_size = 512;
     const size_t page_size = 1048576 * 2;
-		const size_t num_numa_nodes = 8;
-		const size_t num_pages_to_try = umem_size;
-		const size_t num_pages_to_reserve = umem_size - umem_size/8; 
-		size_t alloc_overhead = sizeof(struct mehcached_item);
-		
-		mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try, num_pages_to_reserve);
-		
-		table = &table_o;
-		size_t numa_nodes[] = {(size_t)-1};
-		// mehcached_table_init(table, 1, 1, 256, false, false, false, numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+    const size_t num_numa_nodes = 8;
+    const size_t num_pages_to_try = umem_size;
+    const size_t num_pages_to_reserve = umem_size - umem_size / 8;
+    size_t alloc_overhead = sizeof(struct mehcached_item);
+
+    mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try,
+                       num_pages_to_reserve);
+
+    table = &table_o;
+    size_t numa_nodes[] = {(size_t)-1};
+    // mehcached_table_init(table, 1, 1, 256, false, false, false,
+    // numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
     // Hardcoded 2 instead of numa_nodes[0]
-		mehcached_table_init(table, (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) / MEHCACHED_ITEMS_PER_BUCKET, 1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/(alloc_overhead + 8 + 8), false, false, false, 2, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
-		assert(table);
+    mehcached_table_init(
+        table,
+        (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) /
+            MEHCACHED_ITEMS_PER_BUCKET,
+        1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
+        false, false, 2, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+    assert(table);
 
+    char default_value[VALUE_SIZE];
+    memset(default_value, 'A', VALUE_SIZE - 1);
+    default_value[VALUE_SIZE - 1] = '\0';
 
-		char default_value[VALUE_SIZE];
-		memset(default_value, 'A', VALUE_SIZE-1);
-    	default_value[VALUE_SIZE-1] = '\0'; 
+    for (size_t i = 0; i < NUM_KEYS; i++) {
+      size_t key = i;
+      default_keys[i] = key;
 
-		for(size_t i =0; i< NUM_KEYS; i++)
-		{
-			size_t key = i; 
-			default_keys [i] = key;
-
-			uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
-			if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&default_value, sizeof(default_value), 0, false))
-				assert(false);
-		}
+      uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+      if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
+                         (const uint8_t *)&default_value, sizeof(default_value),
+                         0, false))
+        assert(false);
+    }
   }
-	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-	struct iphdr *ip = (struct iphdr *)((uint8_t*)eth + sizeof(struct rte_ether_hdr));
-	int ip_header_len = ip->ihl * 4;
-	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(((uint8_t*)eth) + sizeof(struct rte_ether_hdr) + ip_header_len);
-	unsigned char *payload = (unsigned char *)(udp + 1);
-	int udp_length = ntohs(udp->dgram_len);
-	int payload_len = udp_length - sizeof(struct rte_udp_hdr);
-	
-	size_t key;
-	char value[VALUE_SIZE];
-	
-	// get key
-	memcpy(&key, payload, sizeof(size_t));
-	flag = !flag;
-	key = default_keys[keys_index];
-	keys_index = (keys_index+1) % NUM_KEYS;
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  struct iphdr *ip =
+      (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
+  int ip_header_len = ip->ihl * 4;
+  struct rte_udp_hdr *udp =
+      (struct rte_udp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr) +
+                             ip_header_len);
+  unsigned char *payload = (unsigned char *)(udp + 1);
+  int udp_length = ntohs(udp->dgram_len);
+  int payload_len = udp_length - sizeof(struct rte_udp_hdr);
 
-	// GET 
-	if(flag)
-	{
-		uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
-		size_t value_length = sizeof(value);
+  size_t key;
+  char value[VALUE_SIZE];
 
-		if (mehcached_get(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (uint8_t *)&value, &value_length, NULL, false))
-			assert(value_length == sizeof(value));
+  // get key
+  memcpy(&key, payload, sizeof(size_t));
+  flag = !flag;
+  key = default_keys[keys_index];
+  keys_index = (keys_index + 1) % NUM_KEYS;
 
-		// send value
-		memcpy(payload + sizeof(size_t), &value, VALUE_SIZE);
-	}
-	
-	// STORE 
-	else 
-	{
-		memcpy(value, payload + sizeof(size_t), VALUE_SIZE);
-		value[VALUE_SIZE-1] = '\0';
-		uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
-		if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&value, sizeof(value), 0, true))
-			assert(false);
+  // GET
+  if (flag) {
+    uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+    size_t value_length = sizeof(value);
 
-		// send acknowledgement
-		memcpy(payload + sizeof(size_t),&value, VALUE_SIZE);
-		
-	}
+    if (mehcached_get(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
+                      (uint8_t *)&value, &value_length, NULL, false))
+      assert(value_length == sizeof(value));
+
+    // send value
+    memcpy(payload + sizeof(size_t), &value, VALUE_SIZE);
+  }
+
+  // STORE
+  else {
+    memcpy(value, payload + sizeof(size_t), VALUE_SIZE);
+    value[VALUE_SIZE - 1] = '\0';
+    uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+    if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
+                       (const uint8_t *)&value, sizeof(value), 0, true))
+      assert(false);
+
+    // send acknowledgement
+    memcpy(payload + sizeof(size_t), &value, VALUE_SIZE);
+  }
 }
 
+static void inline process_nitrosketch(struct rte_mbuf *m) {
+  // NitroSketch: DS init
+  uint64_t pkt_count = 0;
+#ifdef NITRO_CMS
+  static CountMinSketch *cm;
+#endif
 
-static void inline process_packet(struct rte_mbuf *m)
-{
+#ifdef NITRO_CS
+  static CountSketch *cs;
+#endif
+
+//#define NITRO_CS 1
+#ifdef NITRO_CMS
+  if (cm == NULL) {
+    cm = (CountMinSketch *)malloc(sizeof(CountMinSketch));
+    cm_init(cm, CM_COL_NO, 0.01);
+  }
+#endif
+#ifdef NITRO_CS
+  if (cs == NULL) {
+    cs = (CountSketch *)malloc(sizeof(CountSketch));
+    cs_init(cs, CS_COL_NO, 0.01);
+  }
+#endif
+
+  /* Run until the application is quit or killed. */
+
+  pkt_count++;
+  struct rte_ether_hdr *eth_hdr = (rte_pktmbuf_mtod(m, struct rte_ether_hdr *));
+
+  if (likely(eth_hdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))) {
+
+    while (pkt_count >= cm->nextUpdate) {
+      struct rte_ipv4_hdr *ip_hdr = ((struct rte_ipv4_hdr *)(eth_hdr + 1));
+
+      uint64_t flow_key =
+          (ip_hdr->src_addr | (((uint64_t)ip_hdr->dst_addr) << 32));
+#ifdef NITRO_CMS
+      cm_processing(cm, flow_key);
+#endif
+
+#ifdef NITRO_CS
+      cs_processing(cs, flow_key);
+#endif
+    }
+  }
+  // Swap MAC
+  struct rte_ether_addr temp_mac_addr = eth_hdr->s_addr;
+  eth_hdr->s_addr = eth_hdr->d_addr;
+  eth_hdr->d_addr = temp_mac_addr;
+  // print_sketch(&cm, "output_dpdk_nitrosketch.txt");
+}
+
+static void inline process_packet(struct rte_mbuf *m) {
   switch (application) {
-    case 0: //RX count
-      break;
-    case 1: //L2 forward
-      l2_forward(m, 0);
-      break;
-    case 2:  //count min sketch + Workpackage
-      cms_count_add(m);
-      break;
-    case 3:  //maglev load balancer
-      process_packet_maglev(m);
-      break;
-    case 4:  //nat
-      process_nat(m);
-      break;
-    case 5: 
-      process_ids(m);
-      break;
-    case 6:
-      process_decryption(m);
-      break;
-    case 7:
-      process_mica(m);
-      break;
-    default:
-      l2_forward(m, 0);
-      break;
+  case 0: // RX count
+    break;
+  case 1: // L2 forward
+    l2_forward(m, 0);
+    break;
+  case 2: // count min sketch + Workpackage
+    cms_count_add(m);
+    break;
+  case 3: // maglev load balancer
+    process_packet_maglev(m);
+    break;
+  case 4: // nat
+    process_nat(m);
+    break;
+  case 5:
+    process_ids(m);
+    break;
+  case 6:
+    process_decryption(m);
+    break;
+  case 7:
+    process_mica(m);
+    break;
+  case 8:
+    process_nitrosketch(m);
+    break;
+  default:
+    l2_forward(m, 0);
+    break;
   }
 }
-
-
 
 /* main processing loop */
 static void main_loop(void) {
@@ -861,7 +924,7 @@ static void main_loop(void) {
   lcore_id = rte_lcore_id();
   qconf = &lcore_queue_conf[lcore_id];
   dev = &rte_eth_devices[0];
-				    
+
   if (qconf->n_rx_port == 0) {
     RTE_LOG(INFO, DOL, "lcore %u has nothing to do\n", lcore_id);
     return;
@@ -877,7 +940,7 @@ static void main_loop(void) {
   }
 
   uint16_t pktid_prev = 255;
-			    
+
   while (!force_quit) {
 
     cur_tsc = rte_rdtsc();
@@ -923,33 +986,38 @@ static void main_loop(void) {
      */
     int max_loops = 100;
     for (int l = 0; l < 100; l++)
-	    for (i = 0; i < qconf->n_rx_port; i++) {
-		    portid = qconf->rx_port_list[i];
-		    for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
+      for (i = 0; i < qconf->n_rx_port; i++) {
+        portid = qconf->rx_port_list[i];
+        for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
-			    port_stats[portid][q].rx += nb_rx;
+          port_stats[portid][q].rx += nb_rx;
 
-			    for (j = 0; j < nb_rx; j++) {
-				    total++;
-				    m = pkts_burst[j];
-            uint16_t pkid = m->timesync; // using timesync field to store packet ID for simplicity: global (not per queue) packet counter
-            if ((sw_pkt_id !=pkid) && (rx_queue_per_lcore==1)) {
-              /* 
+          for (j = 0; j < nb_rx; j++) {
+            total++;
+            m = pkts_burst[j];
+            uint16_t pkid = m->timesync; // using timesync field to store packet
+                                         // ID for simplicity: global (not per
+                                         // queue) packet counter
+            if ((sw_pkt_id != pkid) && (rx_queue_per_lcore == 1)) {
+              /*
               printf("----------------------------------------------------\n");
               printf("---               Completion error               ---\n");
               printf("total: %u\n", total);
-              printf("Packet ID mismatch! Expected: %u, Actual: %u diff:%d\n", sw_pkt_id, pkid,pkid-sw_pkt_id); 
-              printf("pktid: %d\n", pkid);
+              printf("Packet ID mismatch! Expected: %u, Actual: %u diff:%d\n",
+              sw_pkt_id, pkid,pkid-sw_pkt_id); printf("pktid: %d\n", pkid);
               printf("pktid_prev: %d\n", pktid_prev);
               printf("completion error: %lu\n",cmpl_error);
               printf("----------------------------------------------------\n");
               */
               cmpl_error++;
-              sw_pkt_id = pkid; // resync software packet ID to avoid cascading errors
+              sw_pkt_id =
+                  pkid; // resync software packet ID to avoid cascading errors
             }
-            if (pkid == pktid_prev) cmpl_error_dup++;
-            if (pkid != (pktid_prev + 1) && (pkid != 0) && (pkid != pktid_prev)) {
+            if (pkid == pktid_prev)
+              cmpl_error_dup++;
+            if (pkid != (pktid_prev + 1) && (pkid != 0) &&
+                (pkid != pktid_prev)) {
               cmpl_error_seq++;
               /*
               printf("lost completion entry\n");
@@ -957,159 +1025,192 @@ static void main_loop(void) {
               printf("pktid_prev: %d\n", pktid_prev);*/
             }
 
-	          if (debug) {
+            if (debug) {
               /*
               uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
               printf("----------------------------------------------------\n");
               for (size_t i = 0; i < 64; i++) {
-				        printf("%02X ", *(pkt_data + i));
-				      }
-				      printf("\n");
+                                        printf("%02X ", *(pkt_data + i));
+                                      }
+                                      printf("\n");
               printf("----------------------------------------------------\n");
               */
               uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
-              //int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
-              uint32_t payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+35);
-              uint16_t qid= *(uint16_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+26);
-              if (qid!=q) {
-                printf("----------------------------------------------------\n");
-                printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n", q, qid);
-                printf("----------------------------------------------------\n");
+              // int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m,
+              // void *)+31);
+              uint32_t payload_counter =
+                  *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 35);
+              uint16_t qid =
+                  *(uint16_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 26);
+              if (qid != q) {
+                printf(
+                    "----------------------------------------------------\n");
+                printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n",
+                       q, qid);
+                printf(
+                    "----------------------------------------------------\n");
               }
               if (pkt_len > 64) {
-                //payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+95);
-                payload_counter= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+99);
+                // payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void
+                // *)+95);
+                payload_counter =
+                    *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 99);
               }
-					    //payload_id= payload_id & 0x0FFFF; // mask to 16 bits
-              if (((payload_counter+1) != sw_debug_id[q]) && (payload_counter != sw_debug_id[q])) {
+              // payload_id= payload_id & 0x0FFFF; // mask to 16 bits
+              if (((payload_counter + 1) != sw_debug_id[q]) &&
+                  (payload_counter != sw_debug_id[q])) {
                 debug_error++;
-                
-                printf("----------------------------------------------------\n");
-                printf("Debug: Pkt ID mismatch! Payload: %u, counted: %d diff: %d\n", payload_counter, sw_debug_id[q], (payload_counter - sw_debug_id[q]) & 0x0FFFF);
-                printf("debug error: %lu\n",debug_error);
-                printf("completion error: %lu\n",cmpl_error);
-                printf("total: %u\n",total);
-                printf("----------------------------------------------------\n");
-                
-                //sw_debug_id[q] = payload_id; // resync software packet ID to avoid cascading errors
+
+                printf(
+                    "----------------------------------------------------\n");
+                printf("Debug: Pkt ID mismatch! Payload: %u, counted: %d diff: "
+                       "%d\n",
+                       payload_counter, sw_debug_id[q],
+                       (payload_counter - sw_debug_id[q]) & 0x0FFFF);
+                printf("debug error: %lu\n", debug_error);
+                printf("completion error: %lu\n", cmpl_error);
+                printf("total: %u\n", total);
+                printf(
+                    "----------------------------------------------------\n");
+
+                // sw_debug_id[q] = payload_id; // resync software packet ID to
+                // avoid cascading errors
               }
-              if ((pkid+cmpl_error  &0x0FFFF) != (payload_counter &0x0FFFF)) {
-                printf("Debug: Packet ID mismatch between CMPL id and payload counter: payload_id: %u pkid:%d,  diff: %u\n", payload_counter &0x0FFFF, pkid, (payload_counter & 0x0FFFF)- pkid);
-                printf("debug error: %lu\n",debug_error);
-                printf("completion error: %lu\n",cmpl_error);
+              if ((pkid + cmpl_error & 0x0FFFF) !=
+                  (payload_counter & 0x0FFFF)) {
+                printf("Debug: Packet ID mismatch between CMPL id and payload "
+                       "counter: payload_id: %u pkid:%d,  diff: %u\n",
+                       payload_counter & 0x0FFFF, pkid,
+                       (payload_counter & 0x0FFFF) - pkid);
+                printf("debug error: %lu\n", debug_error);
+                printf("completion error: %lu\n", cmpl_error);
                 printf("pktid: %d\n", pkid);
                 printf("pktid_prev: %d\n", pktid_prev);
-                printf("total: %u\n",total);
-                printf("----------------------------------------------------\n");
+                printf("total: %u\n", total);
+                printf(
+                    "----------------------------------------------------\n");
               }
-              
-              int64_t debug_addr= *(int64_t*) ((uint8_t*)rte_pktmbuf_mtod(m, void *)+14);
+
+              int64_t debug_addr =
+                  *(int64_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 14);
               /*
               char flag= *(char*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+30);
               char tag= *(char*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+28);
-					    printf("----------------------------------------------------\n");
-					    printf("From queue: %d \n", q);
+                                            printf("----------------------------------------------------\n");
+                                            printf("From queue: %d \n", q);
               printf("Payload addr: %p --", (void*)debug_addr);
-					    printf("pkt_cnt=%u Packet ID: %ld\n", total, payload_id);
-					    printf("tag=%d qid: %d\n", tag, qid);
-					    printf("flag=0x%02x \n", flag);
-					    printf("----------------------------------------------------\n");
+                                            printf("pkt_cnt=%u Packet ID:
+              %ld\n", total, payload_id); printf("tag=%d qid: %d\n", tag, qid);
+                                            printf("flag=0x%02x \n", flag);
+                                            printf("----------------------------------------------------\n");
               */
-					    if (debug_addr != (int64_t) rte_pktmbuf_mtod(m, void *)) {
-						    printf("----------------------------------------------------\n");
-						    printf("pkt_cnt=%u Packet ID: %d\n", total, payload_counter);
-						    printf("Debug: Packet data address mismatch! Expected (phys_addr): %p, Actual (from payload): %p --", (void*)rte_pktmbuf_mtod(m, void *), (void*)debug_addr);
-						    printf("Diff %ld (%ld)\n", debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *),abs(debug_addr-(int64_t)rte_pktmbuf_mtod(m, void *))/2368);
-						    printf("----------------------------------------------------\n");
-					    }
-              
-
-				    }
+              if (debug_addr != (int64_t)rte_pktmbuf_mtod(m, void *)) {
+                printf(
+                    "----------------------------------------------------\n");
+                printf("pkt_cnt=%u Packet ID: %d\n", total, payload_counter);
+                printf("Debug: Packet data address mismatch! Expected "
+                       "(phys_addr): %p, Actual (from payload): %p --",
+                       (void *)rte_pktmbuf_mtod(m, void *), (void *)debug_addr);
+                printf("Diff %ld (%ld)\n",
+                       debug_addr - (int64_t)rte_pktmbuf_mtod(m, void *),
+                       abs(debug_addr - (int64_t)rte_pktmbuf_mtod(m, void *)) /
+                           2368);
+                printf(
+                    "----------------------------------------------------\n");
+              }
+            }
             pktid_prev = pkid;
             sw_debug_id[q]++;
             sw_pkt_id++;
 
-				    /*printf("primo:\n");
-				      for (size_t i = 0; i < 32; i++) {
-				      printf("%X ", *(((uint8_t *)phys_addr) + i));
-				      }
-				      printf("\n");
+            /*printf("primo:\n");
+              for (size_t i = 0; i < 32; i++) {
+              printf("%X ", *(((uint8_t *)phys_addr) + i));
+              }
+              printf("\n");
 
-				      printf("secondo:\n");
-				      for (size_t i = 0; i < 32; i++) {
-				      printf("%X ", *(((uint8_t *)phys_addr) -2368+ i));
-				      }
-				      printf("\n");
+              printf("secondo:\n");
+              for (size_t i = 0; i < 32; i++) {
+              printf("%X ", *(((uint8_t *)phys_addr) -2368+ i));
+              }
+              printf("\n");
 
-				      printf("terzo:\n");
-				      for (size_t i = 0; i < 32; i++) {
-				      printf("%X ", *(((uint8_t *)phys_addr) -2*2368+ i));
-				      }
-				      printf("\n");
+              printf("terzo:\n");
+              for (size_t i = 0; i < 32; i++) {
+              printf("%X ", *(((uint8_t *)phys_addr) -2*2368+ i));
+              }
+              printf("\n");
 
-				      printf("i-esimo:\n");
-				      for (size_t i = 0; i < 32; i++) {
-				      printf("%X ", *(((uint8_t *)phys_addr) -(total %128)*2368+ i));
-				      }
-				      printf("\n");
+              printf("i-esimo:\n");
+              for (size_t i = 0; i < 32; i++) {
+              printf("%X ", *(((uint8_t *)phys_addr) -(total %128)*2368+ i));
+              }
+              printf("\n");
 
-				      printf("cinquanta:\n");
-				      for (size_t i = 0; i < 32; i++) {
-				      printf("%X ", *(((uint8_t *)phys_addr) -50*2368+ i));
-				      }
-				      printf("\n");
-				      */
+              printf("cinquanta:\n");
+              for (size_t i = 0; i < 32; i++) {
+              printf("%X ", *(((uint8_t *)phys_addr) -50*2368+ i));
+              }
+              printf("\n");
+              */
 
-				    // printf("lcore %u: port %u, queue %d, packet %d\n", lcore_id,
-				    // portid, q, j);
-				    // rte_prefetch0(rte_pktmbuf_mtod(m, void *));
-				    if ((prefetch_distance > 0) && (j + prefetch_distance < nb_rx)) {
-					    rte_prefetch0(
-							    rte_pktmbuf_mtod(pkts_burst[j + prefetch_distance], void *));
-				    }
+            // printf("lcore %u: port %u, queue %d, packet %d\n", lcore_id,
+            // portid, q, j);
+            // rte_prefetch0(rte_pktmbuf_mtod(m, void *));
+            if ((prefetch_distance > 0) && (j + prefetch_distance < nb_rx)) {
+              rte_prefetch0(
+                  rte_pktmbuf_mtod(pkts_burst[j + prefetch_distance], void *));
+            }
 
-				    /* Write packet to PCAP file */
-				    if (pcap_file != NULL) {
-					    uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
-					    //printf("Packet data address (%ld): %p --", total,pkt_data);
-					    uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
-					    //printf("Packet data: %c%c%c%c\n",pkt_data[pkt_len-4],pkt_data[pkt_len-3],pkt_data[pkt_len-2],pkt_data[pkt_len-1]);
-					    pcap_write_packet(pkt_data, pkt_len);
-				    }
-				    
-            
-            
+            /* Write packet to PCAP file */
+            if (pcap_file != NULL) {
+              uint8_t *pkt_data = (uint8_t *)rte_pktmbuf_mtod(m, uint8_t *);
+              // printf("Packet data address (%ld): %p --", total,pkt_data);
+              uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
+              // printf("Packet data:
+              // %c%c%c%c\n",pkt_data[pkt_len-4],pkt_data[pkt_len-3],pkt_data[pkt_len-2],pkt_data[pkt_len-1]);
+              pcap_write_packet(pkt_data, pkt_len);
+            }
+
             process_packet(m);
-            
 
             if ((!bypass) && (!retransmit)) {
-                rte_pktmbuf_free(m);
+              rte_pktmbuf_free(m);
             }
-				    measured_packets_rx++;
-			    }
-			    //TX burst
+            measured_packets_rx++;
+          }
+          // TX burst
           if ((retransmit) && (nb_rx > 0)) {
-            if (bypass) port_stats[0][q].tx += qdma_xmit_pkts_bypass(dev->data->tx_queues[q], pkts_burst, nb_rx);
-            else port_stats[0][q].tx += qdma_xmit_pkts(dev->data->tx_queues[q], pkts_burst, nb_rx);
+            if (bypass)
+              port_stats[0][q].tx += qdma_xmit_pkts_bypass(
+                  dev->data->tx_queues[q], pkts_burst, nb_rx);
+            else
+              port_stats[0][q].tx +=
+                  qdma_xmit_pkts(dev->data->tx_queues[q], pkts_burst, nb_rx);
           }
-          
+
           // rearm!
-          //if (bypass && (nb_rx > 0)) {
+          // if (bypass && (nb_rx > 0)) {
           if (bypass) {
-               uint16_t cidx;
-               if (!retransmit) cidx  = get_cidx(dev->data->rx_queues[q]);
-               else cidx  = get_cidx_tx(dev->data->tx_queues[q],elastic); //read updated cidx from TX queue
-               update_cidx(dev, q, cidx, prefetch_tag[q & qmask]); // update cidx to rearm the ring
+            uint16_t cidx;
+            if (!retransmit)
+              cidx = get_cidx(dev->data->rx_queues[q]);
+            else
+              cidx = get_cidx_tx(dev->data->tx_queues[q],
+                                 elastic); // read updated cidx from TX queue
+            update_cidx(
+                dev, q, cidx,
+                prefetch_tag[q & qmask]); // update cidx to rearm the ring
           }
-          
+
           if (nb_rx < MAX_PKT_BURST) {
-				    spin_time++;
-			    }
-			    if (nb_rx == 0) {
-				    empty++;
-			    }
-		    }
-	    }
+            spin_time++;
+          }
+          if (nb_rx == 0) {
+            empty++;
+          }
+        }
+      }
   }
 }
 
@@ -1213,7 +1314,7 @@ static unsigned int parse_n(const char *arg) {
     return 0;
   if (n == 0)
     return 0;
-  
+
   return n;
 }
 
@@ -1225,15 +1326,14 @@ static const char short_options[] = "c:" /* CMS columns  */
                                     "B"  /* enable bypass */
                                     "x"  /* enable debug */
                                     "T"  /* enable retransmit */
-                                    "F"  /* enable freerunning */        
-                                    "E"  /* enable elastic buffer */        
+                                    "F"  /* enable freerunning */
+                                    "E"  /* enable elastic buffer */
                                     "P:" /* portmask */
                                     "q:" /* number of queues */
                                     "p:" /* prefetch distance */
                                     "d:" /* number of descriptors */
                                     "a:" /* application */
     ;
-
 
 enum {
   /* long options mapped to a short option */
@@ -1282,19 +1382,19 @@ static int parse_args(int argc, char **argv) {
         return -1;
       }
       break;
-    case 'k': 
+    case 'k':
       num_hash = parse_n(optarg);
       /* check that cms_columns is a power of 2 */
-      if (num_hash < 0 ) {
+      if (num_hash < 0) {
         printf("invalid number of hash functions\n");
         usage(prgname);
         return -1;
       }
       break;
-    case 'r': 
+    case 'r':
       num_rand = parse_n(optarg);
       /* check that cms_columns is a power of 2 */
-      if (num_rand < 0 ) {
+      if (num_rand < 0) {
         printf("invalid number of rand calls\n");
         usage(prgname);
         return -1;
@@ -1344,12 +1444,12 @@ static int parse_args(int argc, char **argv) {
       debug = true;
       break;
     case 'T':
-      retransmit=true;
+      retransmit = true;
       break;
-    case 'E':  
+    case 'E':
       elastic = true;
       break;
-    case 'F':  
+    case 'F':
       freerunning = 1;
       break;
     /* long options */
@@ -1476,35 +1576,40 @@ static void check_all_ports_link_status(uint32_t port_mask) {
 static void signal_handler(int signum) {
   if (signum == SIGINT || signum == SIGTERM) {
     printf("\n\nSignal %d received, preparing to exit...\n", signum);
-    /*for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) { 
+    /*for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
         uint64_t r_addr;
         uint32_t r_tag;
         uint8_t r_valid;
         uint32_t r_num_desc;
-        qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid, &r_num_desc);
-        printf("q=%d addr: %lx tag:%u valid:%u desc:%u\n",qid,r_addr,r_tag,r_valid,r_num_desc);
+        qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid,
+      &r_num_desc); printf("q=%d addr: %lx tag:%u valid:%u
+      desc:%u\n",qid,r_addr,r_tag,r_valid,r_num_desc);
       }*/
-    
+
     force_quit = true;
   }
-  if(signum == SIGQUIT) {
-    //qdma_inv_rx_queue_ctxts(dev,0,1); 
-    //qdma_clr_rx_queue_ctxts(dev,0,1); 
+  if (signum == SIGQUIT) {
+    // qdma_inv_rx_queue_ctxts(dev,0,1);
+    // qdma_clr_rx_queue_ctxts(dev,0,1);
     /*uint16_t rx_cmpt_tail= get_cidx(dev->data->rx_queues[0]);
     printf("Current RX completion tail: %u\n", rx_cmpt_tail);
     int32_t val= qdma_reg_read(dev,0x1800C);
-	  val &= 0xffff0000; 
-	  val += rx_cmpt_tail; 
-	  qdma_reg_write(dev,0x1800C,val);
-	  rte_wmb();
-	  val= qdma_reg_read(dev,0x1800C);
+          val &= 0xffff0000;
+          val += rx_cmpt_tail;
+          qdma_reg_write(dev,0x1800C,val);
+          rte_wmb();
+          val= qdma_reg_read(dev,0x1800C);
     printf("cidx: %d\n",val &0x0ffff);*/
     for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
 
       uint16_t cidx;
-      if (!retransmit) cidx  = get_cidx(dev->data->rx_queues[q]);
-      else cidx  = get_cidx_tx(dev->data->tx_queues[q],elastic); //read updated cidx from TX queue
-      update_cidx(dev, q, cidx, prefetch_tag[q]); // update cidx to rearm the ring
+      if (!retransmit)
+        cidx = get_cidx(dev->data->rx_queues[q]);
+      else
+        cidx = get_cidx_tx(dev->data->tx_queues[q],
+                           elastic); // read updated cidx from TX queue
+      update_cidx(dev, q, cidx,
+                  prefetch_tag[q]); // update cidx to rearm the ring
     }
     printf("SIGQUIT received\n");
   }
@@ -1520,7 +1625,7 @@ int main(int argc, char **argv) {
   unsigned nb_ports_in_mask = 0;
   unsigned int nb_lcores = 0;
   unsigned int nb_mbufs;
-    
+
   setlocale(LC_NUMERIC, ""); // Usa locale di sistema per i separatori
 
   /* init EAL */
@@ -1534,9 +1639,9 @@ int main(int argc, char **argv) {
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
   signal(SIGQUIT, signal_handler);
-   
+
   rte_srand((unsigned)time(NULL));
-  
+
   /* parse application arguments (after the EAL ones) */
   ret = parse_args(argc, argv);
   if (ret < 0)
@@ -1660,11 +1765,11 @@ int main(int argc, char **argv) {
                portid, strerror(-ret));
 
     struct rte_eth_dev *dev = &rte_eth_devices[port_id];
-    
-    //qdma_reg_write_usr(dev,0x000C,1); //QDMA reset
-    //qdma_reg_write_usr(dev,0x000C,2); //CMAC0 reset
-    //qdma_reg_write_usr(dev,0x000C,4); //CMAC1 reset
-    //rte_delay_ms(5000);
+
+    // qdma_reg_write_usr(dev,0x000C,1); //QDMA reset
+    // qdma_reg_write_usr(dev,0x000C,2); //CMAC0 reset
+    // qdma_reg_write_usr(dev,0x000C,4); //CMAC1 reset
+    // rte_delay_ms(5000);
 
     // local_port_conf.rxmode.mq_mode              = ETH_MQ_RX_RSS;
     // local_port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
@@ -1687,7 +1792,6 @@ int main(int argc, char **argv) {
         dev, 0xBE0); // QDMA_CFG_OFFSET 0x001f0040 --> prefech cache size 64 OK!
     printf("CFG VAL: 0x%08x\n", cfg_val);
 
-    
     struct rte_eth_rss_reta_entry64 reta_conf[2048 / RTE_RETA_GROUP_SIZE];
     int i, j;
     // crea l'indir table con valori da 0 a rx_queue_per_lcore
@@ -1739,17 +1843,20 @@ int main(int argc, char **argv) {
       diag =
           rte_pmd_qdma_set_queue_mode(portid, qid, RTE_PMD_QDMA_STREAMING_MODE);
       if (diag < 0)
-        rte_exit(EXIT_FAILURE, "rte_pmd_qdma_set_queue_mode : "
-                               "Passing of STREAMING_MODE "
-                               "failed qid=%d\n",qid);
+        rte_exit(EXIT_FAILURE,
+                 "rte_pmd_qdma_set_queue_mode : "
+                 "Passing of STREAMING_MODE "
+                 "failed qid=%d\n",
+                 qid);
 
       if (bypass) {
-        rte_pmd_qdma_configure_rx_bypass(portid, qid, 2,
-                                       0); // RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2,
+        rte_pmd_qdma_configure_rx_bypass(
+            portid, qid, 2,
+            0); // RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2,
         // Size 0 indicates internal mode descriptor size.
       } else {
         rte_pmd_qdma_configure_rx_bypass(portid, qid, 0,
-                                       0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
+                                         0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
       }
       ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
                                    rte_eth_dev_socket_id(portid), &rxq_conf,
@@ -1758,12 +1865,13 @@ int main(int argc, char **argv) {
         rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
                  portid);
 
-      ret = rte_pmd_qdma_set_cmpt_overflow_check(port_id, qid, !freerunning);      
+      ret = rte_pmd_qdma_set_cmpt_overflow_check(port_id, qid, !freerunning);
       if (ret < 0)
-        rte_exit(EXIT_FAILURE, "rte_pmd_qdma_set_cmpt_overflow_check:err=%d, port=%u\n", ret,
-                 portid);    
+        rte_exit(EXIT_FAILURE,
+                 "rte_pmd_qdma_set_cmpt_overflow_check:err=%d, port=%u\n", ret,
+                 portid);
 
-      if (bypass && (qid <= qmask)) { 
+      if (bypass && (qid <= qmask)) {
         if (qdma_bypass_reg_get_prefetch_tag(dev, qid, &prefetch_tag[qid])) {
           printf("error reading prefetch tag\n");
           return -1;
@@ -1791,9 +1899,9 @@ int main(int argc, char **argv) {
 
       rte_eth_tx_buffer_init(tx_buffer[portid], MAX_PKT_BURST);
 
-      ret = rte_eth_tx_buffer_set_err_callback(
-          tx_buffer[portid], rte_eth_tx_buffer_count_callback,
-          &port_stats[portid][0].dropped);
+      ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[portid],
+                                               rte_eth_tx_buffer_count_callback,
+                                               &port_stats[portid][0].dropped);
       if (ret < 0)
         rte_exit(EXIT_FAILURE,
                  "Cannot set error callback for tx buffer on port %u\n",
@@ -1814,35 +1922,34 @@ int main(int argc, char **argv) {
     printf("done: \n");
     qdma_write_bypass_reg_debug(dev, 0);
     if (bypass) {
-      qdma_reg_write_usr(dev,0x5150,qmask); //qmask
-      //qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
-      for (qid = 0; qid < rx_queue_per_lcore; qid++) { 
-        //print_phys(dev, qid);
+      qdma_reg_write_usr(dev, 0x5150, qmask); // qmask
+      // qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
+      for (qid = 0; qid < rx_queue_per_lcore; qid++) {
+        // print_phys(dev, qid);
         phys_addr = get_desc(dev, qid, 0);
         printf("Phys addr %08lx\n", phys_addr);
-        qdma_write_queue_bypass_registers(dev, qid, phys_addr, prefetch_tag[qid &qmask], 1, nb_rxd);
+        qdma_write_queue_bypass_registers(dev, qid, phys_addr,
+                                          prefetch_tag[qid & qmask], 1, nb_rxd);
       }
-      if (debug) 
-         qdma_write_bypass_reg_debug(dev, 1); 
-      
-      if (freerunning && debug) 
-         qdma_write_bypass_reg_debug(dev, 3); 
-      
-      if (freerunning && !debug) 
-         qdma_write_bypass_reg_debug(dev, 2); 
-        
+      if (debug)
+        qdma_write_bypass_reg_debug(dev, 1);
+
+      if (freerunning && debug)
+        qdma_write_bypass_reg_debug(dev, 3);
+
+      if (freerunning && !debug)
+        qdma_write_bypass_reg_debug(dev, 2);
+
       if (elastic && !debug)
-         qdma_write_bypass_reg_debug(dev, 4); 
+        qdma_write_bypass_reg_debug(dev, 4);
 
       if (elastic && debug)
-        qdma_write_bypass_reg_debug(dev, 5); 
+        qdma_write_bypass_reg_debug(dev, 5);
 
-      
-      
-      //reset counters
+      // reset counters
       qdma_bypass_clear_counters(dev);
     }
-    
+
     printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
            ports_eth_addr[portid].addr_bytes[0],
            ports_eth_addr[portid].addr_bytes[1],
@@ -1891,7 +1998,7 @@ int main(int argc, char **argv) {
       break;
     }
   }
-  
+
   printf("packets: %u\n", total);
   printf("RX packets: %" PRIu64 "\n", stats.ipackets);
   printf("TX packets: %" PRIu64 "\n", stats.opackets);
@@ -1902,11 +2009,11 @@ int main(int argc, char **argv) {
              ((double)end_time / (double)rte_get_timer_hz()));
   printf("measured time: %.2f seconds\n",
          (double)end_time / (double)rte_get_timer_hz());
-  
+
   struct rte_eth_dev *dev = &rte_eth_devices[0];
-  int val=qdma_reg_read_usr(dev, 0x512C); // start from 1 to sync with CMPL id
+  int val = qdma_reg_read_usr(dev, 0x512C); // start from 1 to sync with CMPL id
   printf("PKT COUNTER VAL: %d\n", val);
-  
+
   // save countmin in a file
   /*FILE *fp;
   fp = fopen("countmin.txt", "w");
@@ -1919,8 +2026,8 @@ int main(int argc, char **argv) {
   fclose(fp);*/
 
   if (bypass) {
-   for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) { 
-        qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0,0);
+    for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
+      qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
     }
   }
 
@@ -1931,7 +2038,7 @@ int main(int argc, char **argv) {
     ret = rte_eth_dev_stop(portid);
     if (ret != 0)
       printf("rte_eth_dev_stop: err=%d, port=%d\n", ret, portid);
-    //rte_eth_dev_close(portid);
+    // rte_eth_dev_close(portid);
     printf(" Done\n");
   }
   printf("Bye...\n");
@@ -1949,4 +2056,3 @@ int main(int argc, char **argv) {
 
   return ret;
 }
-
