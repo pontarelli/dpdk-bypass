@@ -343,6 +343,27 @@ uint64_t rx_pkt_prev = 0;
 int mac_updating_flag = 1;
 int application = 0;
 
+enum application_id {
+  RX_COUNT = 0,
+  L2_FWD = 1,
+  COUNT_MIN_SKETCH = 2,
+  MAGLEV = 3,
+  NAT = 4,
+  IDS = 5,
+  DECRYPTION = 6,
+  MICA = 7,
+  NITROSKETCH = 8,
+};
+
+//NITROSKETCH
+#ifdef NITRO_CMS
+  static CountMinSketch *nitro_cm;
+#endif
+
+#ifdef NITRO_CS
+  static CountSketch *nitro_cs;
+#endif
+
 // MICA
 struct mehcached_table table_o;
 struct mehcached_table *table;
@@ -388,7 +409,7 @@ static void print_stats(void) {
   const char topLeft[] = {27, '[', '1', ';', '1', 'H', '\0'};
 
   /* Clear screen and move to top left */
-  printf("%s%s", clr, topLeft);
+  //printf("%s%s", clr, topLeft);
 
   printf("\nPort statistics ====================================");
 
@@ -820,26 +841,19 @@ static void inline process_mica(struct rte_mbuf *m) {
 
 static void inline process_nitrosketch(struct rte_mbuf *m) {
   // NitroSketch: DS init
-  uint64_t pkt_count = 0;
-#ifdef NITRO_CMS
-  static CountMinSketch *cm;
-#endif
-
-#ifdef NITRO_CS
-  static CountSketch *cs;
-#endif
+  static uint64_t pkt_count = 0;
 
 //#define NITRO_CS 1
 #ifdef NITRO_CMS
-  if (cm == NULL) {
-    cm = (CountMinSketch *)malloc(sizeof(CountMinSketch));
-    cm_init(cm, CM_COL_NO, 0.01);
+  if (nitro_cm == NULL) {
+    nitro_cm = (CountMinSketch *)malloc(sizeof(CountMinSketch));
+    cm_init(nitro_cm, CM_COL_NO, 0.01);
   }
 #endif
 #ifdef NITRO_CS
-  if (cs == NULL) {
-    cs = (CountSketch *)malloc(sizeof(CountSketch));
-    cs_init(cs, CS_COL_NO, 0.01);
+  if (nitro_cs == NULL) {
+    nitro_cs = (CountSketch *)malloc(sizeof(CountSketch));
+    cs_init(nitro_cs, CS_COL_NO, 0.01);
   }
 #endif
 
@@ -850,17 +864,17 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
   if (likely(eth_hdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))) {
 
-    while (pkt_count >= cm->nextUpdate) {
+    while (pkt_count >= nitro_cm->nextUpdate) {
       struct rte_ipv4_hdr *ip_hdr = ((struct rte_ipv4_hdr *)(eth_hdr + 1));
 
       uint64_t flow_key =
           (ip_hdr->src_addr | (((uint64_t)ip_hdr->dst_addr) << 32));
 #ifdef NITRO_CMS
-      cm_processing(cm, flow_key);
+      cm_processing(nitro_cm, flow_key);
 #endif
 
 #ifdef NITRO_CS
-      cs_processing(cs, flow_key);
+      cs_processing(nitro_cs, flow_key);
 #endif
     }
   }
@@ -868,35 +882,34 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
   struct rte_ether_addr temp_mac_addr = eth_hdr->s_addr;
   eth_hdr->s_addr = eth_hdr->d_addr;
   eth_hdr->d_addr = temp_mac_addr;
-  // print_sketch(&cm, "output_dpdk_nitrosketch.txt");
 }
 
 static void inline process_packet(struct rte_mbuf *m) {
   switch (application) {
-  case 0: // RX count
+  case RX_COUNT: // RX count
     break;
-  case 1: // L2 forward
+  case L2_FWD: // L2 forward
     l2_forward(m, 0);
     break;
-  case 2: // count min sketch + Workpackage
+  case COUNT_MIN_SKETCH: // count min sketch + Workpackage
     cms_count_add(m);
     break;
-  case 3: // maglev load balancer
+  case MAGLEV: // maglev load balancer
     process_packet_maglev(m);
     break;
-  case 4: // nat
+  case NAT: // nat
     process_nat(m);
     break;
-  case 5:
+  case IDS:
     process_ids(m);
     break;
-  case 6:
+  case DECRYPTION:
     process_decryption(m);
     break;
-  case 7:
+  case MICA:
     process_mica(m);
     break;
-  case 8:
+  case NITROSKETCH:
     process_nitrosketch(m);
     break;
   default:
@@ -1211,6 +1224,14 @@ static void main_loop(void) {
           }
         }
       }
+  }
+  if (application == NITROSKETCH) {
+  #ifdef NITRO_CMS
+   print_sketch(nitro_cm, "output_dpdk_nitrosketch.txt");
+  #endif
+  #ifdef NITRO_CS
+   print_sketch(nitro_cs, "output_dpdk_nitrosketch.txt");
+  #endif
   }
 }
 

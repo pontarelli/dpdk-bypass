@@ -3,6 +3,11 @@
 
 
 #include "xxhash.h"
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include "constants.h"
 
 // NitroSketch: DS decl
 #ifdef NITRO_CMS
@@ -39,15 +44,26 @@ typedef struct CountSketch {
 } CountSketch;
 #endif
 
-//void print_sketch(CountMinSketch* cm, std::string filename) {
-//    std::ofstream output(filename, std::ios::trunc);
-//    for (size_t row = 0; row < CM_ROW_NO; row++) {
-//        for (size_t col = 0; col < CM_COL_NO; col++) {
-//            output << cm->sketch[row][col] << " ";
-//        }
-//        output << std::endl;
-//    }
-//}
+#ifdef NITRO_CMS
+void print_sketch(CountMinSketch* cm, char* filename) {
+    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        perror("Failed to open file");
+        return;
+    }
+    char buf[64];
+    for (size_t row = 0; row < CM_ROW_NO; row++) {
+        for (size_t col = 0; col < CM_COL_NO; col++) {
+            sprintf(buf, "%d ", cm->sketch[row][col]);
+            write(fd, buf, strlen(buf));
+        }
+        //fprintf(fd, "\n");
+        write(fd, "\n", 1);
+    }
+    printf("Finished printing Count-Min Sketch\n");
+    close(fd);
+}
+#endif
 
 // NitroSketch init
 #ifdef NITRO_CMS
@@ -58,6 +74,10 @@ void cm_init(CountMinSketch* cm, uint32_t col_size, double _prob){
     initMinHeap(&(cm->topK), TOPK_SIZE); //init heap
     for (uint32_t i = 0; i < CM_ROW_NO; ++i){
         cm->sketch[i] = (int32_t *)calloc(col_size, sizeof(uint32_t)); //init
+        for (uint32_t j = 0; j < col_size; ++j){
+            cm->sketch[i][j] = 0;
+        }
+            
     }
 
 #ifdef FASTRAND_UNI

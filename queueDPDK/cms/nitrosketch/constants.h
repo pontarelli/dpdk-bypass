@@ -31,6 +31,7 @@
 //#define FIXED_RATE 1
 
 #define CM_ROW_NO 5
+//#define CM_COL_NO 10
 #define CM_COL_NO 102400
 //1000000 counters for 0.01 and 20*
 
