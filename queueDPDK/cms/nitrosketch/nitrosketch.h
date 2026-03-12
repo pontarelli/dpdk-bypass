@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <time.h>
 #include "constants.h"
 
 // NitroSketch: DS decl
@@ -61,6 +63,27 @@ void print_sketch(CountMinSketch* cm, char* filename) {
         write(fd, "\n", 1);
     }
     printf("Finished printing Count-Min Sketch\n");
+    close(fd);
+}
+#endif
+
+#ifdef NITRO_CS
+void print_sketch(CountSketch* cs, char* filename) {
+    int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        perror("Failed to open file");
+        return;
+    }
+    char buf[64];
+    for (size_t row = 0; row < CS_ROW_NO; row++) {
+        for (size_t col = 0; col < cs->col_size; col++) {
+            sprintf(buf, "%d ", cs->sketch[row][col]);
+            write(fd, buf, strlen(buf));
+        }
+        //fprintf(fd, "\n");
+        write(fd, "\n", 1);
+    }
+    printf("Finished printing Count Sketch\n");
     close(fd);
 }
 #endif
@@ -203,8 +226,9 @@ void cs_init(CountSketch* cs, uint32_t col_size, double _prob){
     cs->line_to_update = cs->line_to_update%CS_ROW_NO;
 
     printf("NitroSketch w/ Count Sketch configuration done!\n");
-    cs->cur_cycle = __rdtsc();
-    //clock_gettime(CLOCK_MONOTONIC, &cs->cur_time);
+    //cs->cur_cycle = __rdtsc();
+    //clock_gettime(CLOCK_MONOTONIC, &cs->cur_);
+    cs->cur_cycle = clock();
 }
 
 void cs_processing_always_line_rate(CountSketch* cs, uint32_t key)
@@ -216,8 +240,7 @@ void cs_processing_always_line_rate(CountSketch* cs, uint32_t key)
     cs->sketch[line_to_update][col_loc] += (1 - 2*f2_filter)*cs->gap;
     cs->p_count++;
     if (cs->p_count % INTERVAL == 0){
-        uint64_t diff_cycle;
-        diff_cycle = __rdtsc();
+        uint64_t diff_cycle = clock();
     }
 
 #ifdef TOPK

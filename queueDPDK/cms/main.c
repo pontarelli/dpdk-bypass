@@ -864,17 +864,22 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
   if (likely(eth_hdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))) {
 
-    while (pkt_count >= nitro_cm->nextUpdate) {
-      struct rte_ipv4_hdr *ip_hdr = ((struct rte_ipv4_hdr *)(eth_hdr + 1));
-
-      uint64_t flow_key =
-          (ip_hdr->src_addr | (((uint64_t)ip_hdr->dst_addr) << 32));
 #ifdef NITRO_CMS
-      cm_processing(nitro_cm, flow_key);
+    while (pkt_count >= nitro_cm->nextUpdate) {
+#endif
+#ifdef NITRO_CS
+      while (pkt_count >= nitro_cs->nextUpdate) {
+#endif
+        struct rte_ipv4_hdr *ip_hdr = ((struct rte_ipv4_hdr *)(eth_hdr + 1));
+
+        uint64_t flow_key =
+            (ip_hdr->src_addr | (((uint64_t)ip_hdr->dst_addr) << 32));
+#ifdef NITRO_CMS
+        cm_processing(nitro_cm, flow_key);
 #endif
 
 #ifdef NITRO_CS
-      cs_processing(nitro_cs, flow_key);
+        cs_processing_always_line_rate(nitro_cs, flow_key);
 #endif
     }
   }
@@ -882,7 +887,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
   struct rte_ether_addr temp_mac_addr = eth_hdr->s_addr;
   eth_hdr->s_addr = eth_hdr->d_addr;
   eth_hdr->d_addr = temp_mac_addr;
-}
+  }
 
 static void inline process_packet(struct rte_mbuf *m) {
   switch (application) {
