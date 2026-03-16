@@ -1043,7 +1043,7 @@ static void main_loop(void) {
               printf("pktid_prev: %d\n", pktid_prev);*/
             }
 
-            if (debug) {
+            if  (debug && (1==0)) {
               /*
               uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
               printf("----------------------------------------------------\n");
@@ -1056,7 +1056,15 @@ static void main_loop(void) {
               uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
               // int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m,
               // void *)+31);
-              uint32_t payload_counter =
+              /* 
+              uint32_t tx_timestamp =
+                  *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 43);
+              uint32_t rx_timestamp =
+                  *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 39);
+              printf("RX timestamp: %u, TX timestamp: %u\n", rx_timestamp, tx_timestamp);
+                  //uint32_t latency = tx_timestamp - rx_timestamp;
+              */
+                  uint32_t payload_counter =
                   *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 35);
               uint16_t qid =
                   *(uint16_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 26);
@@ -1946,7 +1954,10 @@ int main(int argc, char **argv) {
                portid);
 
     printf("done: \n");
-    qdma_write_bypass_reg_debug(dev, 0);
+    if (debug)
+	    qdma_write_bypass_reg_debug(dev, 1);
+    else
+      qdma_write_bypass_reg_debug(dev, 0);
     if (bypass) {
       qdma_reg_write_usr(dev, 0x5150, qmask); // qmask
       // qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
@@ -1957,9 +1968,6 @@ int main(int argc, char **argv) {
         qdma_write_queue_bypass_registers(dev, qid, phys_addr,
                                           prefetch_tag[qid & qmask], 1, nb_rxd);
       }
-      if (debug)
-        qdma_write_bypass_reg_debug(dev, 1);
-
       if (freerunning && debug)
         qdma_write_bypass_reg_debug(dev, 3);
 
@@ -1975,7 +1983,7 @@ int main(int argc, char **argv) {
       // reset counters
       qdma_bypass_clear_counters(dev);
     }
-
+    
     printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
            ports_eth_addr[portid].addr_bytes[0],
            ports_eth_addr[portid].addr_bytes[1],
