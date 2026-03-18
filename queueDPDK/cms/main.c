@@ -229,7 +229,7 @@ static uint32_t get_bypass_cidx(void *dev, uint16_t qid) {
 struct rte_eth_dev *dev = NULL;
 struct rte_eth_stats stats;
 
-uint32_t qmask = 0x7;
+uint32_t qmask = 0x1; //test con 2 code
 uint32_t prefetch_tag[2048];
 
 uint16_t port_id = 0;
@@ -310,6 +310,8 @@ struct port_statistics port_stats[RTE_MAX_ETHPORTS][MAX_RX_QUEUE_PER_LCORE];
 /* A tsc-based timer responsible for triggering statistics printout */
 static uint64_t timer_period = 1; /* default period is 1 second */
 
+uint64_t q0_phys_addr_start;
+uint64_t q1_phys_addr_start;
 uint64_t debug_error = 0;
 uint64_t cmpl_error = 0;
 uint64_t cmpl_error_seq = 0;
@@ -960,7 +962,10 @@ static void main_loop(void) {
   uint16_t pktid_prev = 255;
 
   while (!force_quit) {
-
+    //if (total >300) {
+    //  print_stats();
+    //  break;
+    //}
     cur_tsc = rte_rdtsc();
 
     /*
@@ -1003,8 +1008,7 @@ static void main_loop(void) {
      * Read packet from RX queues
      */
     int max_loops = 100;
-    for (int l = 0; l < 100; l++)
-      for (i = 0; i < qconf->n_rx_port; i++) {
+    for (i = 0; i < qconf->n_rx_port; i++) {
         portid = qconf->rx_port_list[i];
         for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
@@ -1042,8 +1046,15 @@ static void main_loop(void) {
               printf("pktid: %d\n", pkid);
               printf("pktid_prev: %d\n", pktid_prev);*/
             }
-
-            if  (debug && (1==0)) {
+            uint64_t q0_phys_addr;
+            if (q == 0)
+              q0_phys_addr = (uint64_t)(void*)rte_pktmbuf_mtod(m, void *);
+            if((debug) && (1==0)) {
+              printf("Debug: Queue ID: %d   CMPL ID: %d\n", q,pkid);
+              printf("Phys_addr: %p\n", (void*)rte_pktmbuf_mtod(m, void *));
+              int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
+              printf("Payload id: %ld\n", payload_id);
+              
               /*
               uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
               printf("----------------------------------------------------\n");
@@ -1073,34 +1084,40 @@ static void main_loop(void) {
                     "----------------------------------------------------\n");
                 printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n",
                        q, qid);
-                printf(
-                    "----------------------------------------------------\n");
+                printf("----------------------------------------------------\n");
+              
+                printf("Q0 packet data:\n");
+                for (size_t i = 0; i < 32; i++) {
+                    printf("%X ", *(((uint8_t *)q0_phys_addr)+ i));
+                }
+                printf("\n");
+                payload_id= *(uint32_t*)((uint8_t*)q0_phys_addr+31);
+                printf("q0 Payload id: %ld\n", payload_id);
+              
+                printf("----------------------------------------------------\n");
+                printf("----------------------------------------------------\n");
+                printf("Q0 packet data:\n");
+                for (int k=0; k<1024; k++) {
+                  printf("packet %d:\n", k);
+                  for (size_t i = 0; i < 32; i++) {
+                      printf("%X ", *(((uint8_t *)q0_phys_addr_start)+k*2368+ i));
+                  }
+                  printf("\n");
+                }
+                printf("Q1 packet data:\n");
+                for (int k=0; k<1024; k++) {
+                  printf("packet %d:\n", k);
+                  for (size_t i = 0; i < 32; i++) {
+                      printf("%X ", *(((uint8_t *)q1_phys_addr_start)+k*2368+ i));
+                  }
+                  printf("\n");
+                }
               }
               if (pkt_len > 64) {
                 // payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void
                 // *)+95);
                 payload_counter =
                     *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 99);
-              }
-              // payload_id= payload_id & 0x0FFFF; // mask to 16 bits
-              if (((payload_counter + 1) != sw_debug_id[q]) &&
-                  (payload_counter != sw_debug_id[q])) {
-                debug_error++;
-
-                printf(
-                    "----------------------------------------------------\n");
-                printf("Debug: Pkt ID mismatch! Payload: %u, counted: %d diff: "
-                       "%d\n",
-                       payload_counter, sw_debug_id[q],
-                       (payload_counter - sw_debug_id[q]) & 0x0FFFF);
-                printf("debug error: %lu\n", debug_error);
-                printf("completion error: %lu\n", cmpl_error);
-                printf("total: %u\n", total);
-                printf(
-                    "----------------------------------------------------\n");
-
-                // sw_debug_id[q] = payload_id; // resync software packet ID to
-                // avoid cascading errors
               }
               if ((pkid + cmpl_error & 0x0FFFF) !=
                   (payload_counter & 0x0FFFF)) {
@@ -1964,6 +1981,9 @@ int main(int argc, char **argv) {
       for (qid = 0; qid < rx_queue_per_lcore; qid++) {
         // print_phys(dev, qid);
         phys_addr = get_desc(dev, qid, 0);
+        if (qid==0) q0_phys_addr_start = phys_addr;
+        if (qid==1) q1_phys_addr_start = phys_addr;
+
         printf("Phys addr %08lx\n", phys_addr);
         qdma_write_queue_bypass_registers(dev, qid, phys_addr,
                                           prefetch_tag[qid & qmask], 1, nb_rxd);
