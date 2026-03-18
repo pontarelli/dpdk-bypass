@@ -298,7 +298,7 @@ static struct rte_eth_conf port_conf = {
         },
 };
 
-struct rte_mempool *pktmbuf_pool[1024] = {NULL};
+struct rte_mempool *pktmbuf_pool[2048] = {NULL};
 /* Per-port statistics struct */
 struct port_statistics {
   uint64_t tx;
@@ -1844,17 +1844,22 @@ int main(int argc, char **argv) {
   printf("Creating mbuf pool with %u mbufs\n", nb_mbufs);
 
   /* create the mbuf pool */
-  for (int i = 0; i < rx_queue_per_lcore; i++) {
-    char pool_name[32];
-    snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
-    nb_mbufs = nb_ports *
-          (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE);
+  if (bypass) {
+    for (uint32_t i = 0; i < rx_queue_per_lcore; i++) {
+      char pool_name[32];
+      snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
+      nb_mbufs = nb_ports *
+            (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE);
   
-    pktmbuf_pool[i] =
-      //rte_pktmbuf_pool_create(pool_name, nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
-      //                        RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-      create_extbuf_pool(pool_name,nb_ports, 1, nb_rxd, nb_txd, nb_lcores, rte_socket_id());
-                              
+      pktmbuf_pool[i] =
+        //rte_pktmbuf_pool_create(pool_name, nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
+        //                        RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+        create_extbuf_pool(pool_name,nb_ports, 1, nb_rxd, nb_txd, nb_lcores, rte_socket_id());
+      }
+  }
+  else {
+    pktmbuf_pool[0] = rte_pktmbuf_pool_create("mbuf_pool", nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
+                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
   }
 
   /* Initialise each port */
@@ -1974,9 +1979,15 @@ int main(int argc, char **argv) {
         rte_pmd_qdma_configure_rx_bypass(portid, qid, 0,
                                          0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
       }
-      ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
+      if (bypass) {
+        ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
                                    rte_eth_dev_socket_id(portid), &rxq_conf,
                                    pktmbuf_pool[qid]);
+      } else {
+        ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
+                                   rte_eth_dev_socket_id(portid), &rxq_conf,
+                                   pktmbuf_pool[0]);
+      }
       if (ret < 0)
         rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
                  portid);
