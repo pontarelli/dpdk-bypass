@@ -2065,7 +2065,7 @@ void print_phys(struct rte_eth_dev *dev, uint16_t qid)
   for(int i=0;i<2048;i++) {
       if (rxq->sw_ring[i]==NULL) break;         
       struct rte_mbuf* mb=rxq->sw_ring[i];
-                       uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
+      uint64_t  phys_addr = (uint64_t)mb->buf_iova + RTE_PKTMBUF_HEADROOM;
       //uint64_t virt_addr= (uint64_t) rte_pktmbuf_mtod(mb, unsigned char *);
       //printf("coda %d: descrittore %d phys_addr=0x%8lx virt_addr=0x%8lx\n",qid,i,phys_addr,virt_addr);
                        // oppure
@@ -2074,7 +2074,7 @@ void print_phys(struct rte_eth_dev *dev, uint16_t qid)
       //printf("coda %d: descrittore %d phys_addr=0x%8lx \n",qid,i,phys_addr);
       int64_t diff= phys_addr-old_phys_addr;
       if (diff!=2368 && i>0)
-        printf("desc=%d phys_addr=0x%8lx diff =%ld 0x%lx\n",i,phys_addr,-diff,-diff);
+        printf("desc=%d phys_addr=0x%8lx old_phys_addr=0x%8lx, diff =%ld 0x%lx\n",i,phys_addr,old_phys_addr,-diff,-diff);
       old_phys_addr= phys_addr;
   }
 }

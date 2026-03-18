@@ -229,7 +229,7 @@ static uint32_t get_bypass_cidx(void *dev, uint16_t qid) {
 struct rte_eth_dev *dev = NULL;
 struct rte_eth_stats stats;
 
-uint32_t qmask = 0x1; //test con 2 code
+uint32_t qmask = 0x7;
 uint32_t prefetch_tag[2048];
 
 uint16_t port_id = 0;
@@ -298,7 +298,7 @@ static struct rte_eth_conf port_conf = {
         },
 };
 
-struct rte_mempool *pktmbuf_pool = NULL;
+struct rte_mempool *pktmbuf_pool[1024] = {NULL};
 /* Per-port statistics struct */
 struct port_statistics {
   uint64_t tx;
@@ -393,6 +393,71 @@ struct hashmap services;
 struct hashmap backends;
 struct hashmap maglev_tables;
 struct hashmap active_sessions;
+
+
+
+static struct rte_mempool *
+create_extbuf_pool(const char *name,
+                   uint16_t nb_ports,
+                   uint16_t rx_queue_per_lcore,
+                   uint16_t nb_rxd,
+                   uint16_t nb_txd,
+                   uint16_t nb_lcores,
+                   int socket_id)
+{
+    uint32_t nb_mbuf;
+
+    nb_mbuf = RTE_MAX(
+        rx_queue_per_lcore * nb_ports *
+            (nb_rxd + nb_txd + MAX_PKT_BURST +
+             nb_lcores * MEMPOOL_CACHE_SIZE),
+        8192U);
+
+    const uint16_t data_room_size = RTE_MBUF_DEFAULT_BUF_SIZE;
+    const uint16_t priv_size = 0;
+
+    /* Total memory needed */
+    size_t buf_len = RTE_ALIGN_CEIL(192+data_room_size, RTE_CACHE_LINE_SIZE); //2368 2176
+    size_t total_size = (size_t)nb_mbuf * buf_len;
+
+    /* Allocate contiguous DMA-safe memory */
+    void *buf_addr = rte_malloc(NULL, total_size, RTE_CACHE_LINE_SIZE);
+    if (!buf_addr) {
+        rte_exit(EXIT_FAILURE, "Cannot allocate extbuf memory\n");
+    }
+
+    /* Get IOVA */
+    rte_iova_t buf_iova = rte_malloc_virt2iova(buf_addr);
+    if (buf_iova == RTE_BAD_IOVA) {
+        rte_exit(EXIT_FAILURE, "IOVA translation failed\n");
+    }
+
+    /* Describe external memory region */
+    struct rte_pktmbuf_extmem extmem = {
+        .buf_ptr = buf_addr,
+        .buf_iova = buf_iova,
+        .buf_len = total_size,
+        .elt_size = buf_len,
+    };
+
+    /* Create mempool */
+    struct rte_mempool *mp = rte_pktmbuf_pool_create_extbuf(
+        name,
+        nb_mbuf,
+        MEMPOOL_CACHE_SIZE,
+        priv_size,
+        data_room_size,
+        socket_id,
+        &extmem,
+        1  /* number of extmem segments */
+    );
+
+    if (mp == NULL) {
+        rte_exit(EXIT_FAILURE, "Cannot create extbuf pool\n");
+    }
+
+    return mp;
+}
 
 static void print_stats(void) {
   uint64_t total_packets_dropped = 0, total_packets_tx = 0,
@@ -1046,16 +1111,15 @@ static void main_loop(void) {
               printf("pktid: %d\n", pkid);
               printf("pktid_prev: %d\n", pktid_prev);*/
             }
-            uint64_t q0_phys_addr;
-            if (q == 0)
-              q0_phys_addr = (uint64_t)(void*)rte_pktmbuf_mtod(m, void *);
-            if((debug) && (1==0)) {
+            
+            if(debug) {
+              /*
               printf("Debug: Queue ID: %d   CMPL ID: %d\n", q,pkid);
               printf("Phys_addr: %p\n", (void*)rte_pktmbuf_mtod(m, void *));
               int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
               printf("Payload id: %ld\n", payload_id);
               
-              /*
+              
               uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
               printf("----------------------------------------------------\n");
               for (size_t i = 0; i < 64; i++) {
@@ -1085,14 +1149,6 @@ static void main_loop(void) {
                 printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n",
                        q, qid);
                 printf("----------------------------------------------------\n");
-              
-                printf("Q0 packet data:\n");
-                for (size_t i = 0; i < 32; i++) {
-                    printf("%X ", *(((uint8_t *)q0_phys_addr)+ i));
-                }
-                printf("\n");
-                payload_id= *(uint32_t*)((uint8_t*)q0_phys_addr+31);
-                printf("q0 Payload id: %ld\n", payload_id);
               
                 printf("----------------------------------------------------\n");
                 printf("----------------------------------------------------\n");
@@ -1788,9 +1844,18 @@ int main(int argc, char **argv) {
   printf("Creating mbuf pool with %u mbufs\n", nb_mbufs);
 
   /* create the mbuf pool */
-  pktmbuf_pool =
-      rte_pktmbuf_pool_create("mbuf_pool", nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
-                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+  for (int i = 0; i < rx_queue_per_lcore; i++) {
+    char pool_name[32];
+    snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
+    nb_mbufs = nb_ports *
+          (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE);
+  
+    pktmbuf_pool[i] =
+      //rte_pktmbuf_pool_create(pool_name, nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
+      //                        RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+      create_extbuf_pool(pool_name,nb_ports, 1, nb_rxd, nb_txd, nb_lcores, rte_socket_id());
+                              
+  }
 
   /* Initialise each port */
   RTE_ETH_FOREACH_DEV(portid) {
@@ -1911,7 +1976,7 @@ int main(int argc, char **argv) {
       }
       ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
                                    rte_eth_dev_socket_id(portid), &rxq_conf,
-                                   pktmbuf_pool);
+                                   pktmbuf_pool[qid]);
       if (ret < 0)
         rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
                  portid);
@@ -1979,7 +2044,8 @@ int main(int argc, char **argv) {
       qdma_reg_write_usr(dev, 0x5150, qmask); // qmask
       // qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
       for (qid = 0; qid < rx_queue_per_lcore; qid++) {
-        // print_phys(dev, qid);
+        printf("---   Q=%d   ---\n", qid);
+        print_phys(dev, qid);
         phys_addr = get_desc(dev, qid, 0);
         if (qid==0) q0_phys_addr_start = phys_addr;
         if (qid==1) q1_phys_addr_start = phys_addr;
