@@ -43,6 +43,7 @@
 #include <rte_byteorder.h>
 #include <rte_memzone.h>
 #include <linux/pci.h>
+#include <stdint.h>
 #include "qdma_user.h"
 #include "qdma_resource_mgmt.h"
 #include "qdma_mbox.h"
@@ -194,6 +195,8 @@ struct qdma_rx_queue {
 	uint32_t		queue_id; /**< RX queue index. */
 	uint64_t		mbuf_initializer; /**< value to init mbufs */
 
+	uint16_t 		previous_rxring_cidx; /* used for tracking the previous cidx of rx ring for adaptive buffer allocation */
+	uint16_t		prev_c2h_pidx; /* used for tracking the previous pidx of c2h ring for adaptive buffer allocation */
 	struct qdma_q_pidx_reg_info	q_pidx_info;
 	struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info;
 	struct qdma_pkt_stats	stats;
@@ -208,6 +211,7 @@ struct qdma_rx_queue {
 	uint8_t			en_bypass:1;
 	uint8_t			en_bypass_prefetch:1;
 	uint8_t			dis_overflow_check:1;
+	uint8_t 	 	toasty_enabled:1; /* Enable toasty logic for adaptive buffer allocation */
 
 	union qdma_ul_st_cmpt_ring cmpt_data[QDMA_MAX_BURST_SIZE];
 
@@ -287,6 +291,7 @@ struct queue_info {
 	uint8_t		immediate_data_state:1;
 	uint8_t		dis_cmpt_ovf_chk:1;
 	uint8_t		en_prefetch:1;
+	uint8_t 	en_toasty_logic:1;
 	enum rte_pmd_qdma_bypass_desc_len rx_bypass_desc_sz:7;
 	enum rte_pmd_qdma_bypass_desc_len tx_bypass_desc_sz:7;
 	uint8_t		timer_count;
