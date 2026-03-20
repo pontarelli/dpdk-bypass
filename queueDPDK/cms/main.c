@@ -239,6 +239,7 @@ static volatile bool force_quit;
 bool silent = false;
 bool dump = false;
 bool bypass = false;
+bool lifo = false;
 uint8_t freerunning = 0; /* cmpt overflow check mode: 0=disabled, 1=enabled */
 bool debug = false;
 bool elastic = false;
@@ -357,13 +358,13 @@ enum application_id {
   NITROSKETCH = 8,
 };
 
-//NITROSKETCH
+// NITROSKETCH
 #ifdef NITRO_CMS
-  static CountMinSketch *nitro_cm;
+static CountMinSketch *nitro_cm;
 #endif
 
 #ifdef NITRO_CS
-  static CountSketch *nitro_cs;
+static CountSketch *nitro_cs;
 #endif
 
 // MICA
@@ -394,69 +395,56 @@ struct hashmap backends;
 struct hashmap maglev_tables;
 struct hashmap active_sessions;
 
-
-
 static struct rte_mempool *
-create_extbuf_pool(const char *name,
-                   uint16_t nb_ports,
-                   uint16_t rx_queue_per_lcore,
-                   uint16_t nb_rxd,
-                   uint16_t nb_txd,
-                   uint16_t nb_lcores,
-                   int socket_id)
-{
-    uint32_t nb_mbuf;
+create_extbuf_pool(const char *name, uint16_t nb_ports,
+                   uint16_t rx_queue_per_lcore, uint16_t nb_rxd,
+                   uint16_t nb_txd, uint16_t nb_lcores, int socket_id) {
+  uint32_t nb_mbuf;
 
-    nb_mbuf = RTE_MAX(
-        rx_queue_per_lcore * nb_ports *
-            (nb_rxd + nb_txd + MAX_PKT_BURST +
-             nb_lcores * MEMPOOL_CACHE_SIZE),
-        8192U);
+  nb_mbuf = RTE_MAX(
+      rx_queue_per_lcore * nb_ports *
+          (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE),
+      8192U);
 
-    const uint16_t data_room_size = RTE_MBUF_DEFAULT_BUF_SIZE;
-    const uint16_t priv_size = 0;
+  const uint16_t data_room_size = RTE_MBUF_DEFAULT_BUF_SIZE;
+  const uint16_t priv_size = 0;
 
-    /* Total memory needed */
-    size_t buf_len = RTE_ALIGN_CEIL(192+data_room_size, RTE_CACHE_LINE_SIZE); //2368 2176
-    size_t total_size = (size_t)nb_mbuf * buf_len;
+  /* Total memory needed */
+  size_t buf_len =
+      RTE_ALIGN_CEIL(192 + data_room_size, RTE_CACHE_LINE_SIZE); // 2368 2176
+  size_t total_size = (size_t)nb_mbuf * buf_len;
 
-    /* Allocate contiguous DMA-safe memory */
-    void *buf_addr = rte_malloc(NULL, total_size, RTE_CACHE_LINE_SIZE);
-    if (!buf_addr) {
-        rte_exit(EXIT_FAILURE, "Cannot allocate extbuf memory\n");
-    }
+  /* Allocate contiguous DMA-safe memory */
+  void *buf_addr = rte_malloc(NULL, total_size, RTE_CACHE_LINE_SIZE);
+  if (!buf_addr) {
+    rte_exit(EXIT_FAILURE, "Cannot allocate extbuf memory\n");
+  }
 
-    /* Get IOVA */
-    rte_iova_t buf_iova = rte_malloc_virt2iova(buf_addr);
-    if (buf_iova == RTE_BAD_IOVA) {
-        rte_exit(EXIT_FAILURE, "IOVA translation failed\n");
-    }
+  /* Get IOVA */
+  rte_iova_t buf_iova = rte_malloc_virt2iova(buf_addr);
+  if (buf_iova == RTE_BAD_IOVA) {
+    rte_exit(EXIT_FAILURE, "IOVA translation failed\n");
+  }
 
-    /* Describe external memory region */
-    struct rte_pktmbuf_extmem extmem = {
-        .buf_ptr = buf_addr,
-        .buf_iova = buf_iova,
-        .buf_len = total_size,
-        .elt_size = buf_len,
-    };
+  /* Describe external memory region */
+  struct rte_pktmbuf_extmem extmem = {
+      .buf_ptr = buf_addr,
+      .buf_iova = buf_iova,
+      .buf_len = total_size,
+      .elt_size = buf_len,
+  };
 
-    /* Create mempool */
-    struct rte_mempool *mp = rte_pktmbuf_pool_create_extbuf(
-        name,
-        nb_mbuf,
-        MEMPOOL_CACHE_SIZE,
-        priv_size,
-        data_room_size,
-        socket_id,
-        &extmem,
-        1  /* number of extmem segments */
-    );
+  /* Create mempool */
+  struct rte_mempool *mp = rte_pktmbuf_pool_create_extbuf(
+      name, nb_mbuf, MEMPOOL_CACHE_SIZE, priv_size, data_room_size, socket_id,
+      &extmem, 1 /* number of extmem segments */
+  );
 
-    if (mp == NULL) {
-        rte_exit(EXIT_FAILURE, "Cannot create extbuf pool\n");
-    }
+  if (mp == NULL) {
+    rte_exit(EXIT_FAILURE, "Cannot create extbuf pool\n");
+  }
 
-    return mp;
+  return mp;
 }
 
 static void print_stats(void) {
@@ -476,7 +464,7 @@ static void print_stats(void) {
   const char topLeft[] = {27, '[', '1', ';', '1', 'H', '\0'};
 
   /* Clear screen and move to top left */
-  //printf("%s%s", clr, topLeft);
+  // printf("%s%s", clr, topLeft);
 
   printf("\nPort statistics ====================================");
 
@@ -910,7 +898,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
   // NitroSketch: DS init
   static uint64_t pkt_count = 0;
 
-//#define NITRO_CS 1
+// #define NITRO_CS 1
 #ifdef NITRO_CMS
   if (nitro_cm == NULL) {
     nitro_cm = (CountMinSketch *)malloc(sizeof(CountMinSketch));
@@ -948,132 +936,132 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 #ifdef NITRO_CS
         cs_processing_always_line_rate(nitro_cs, flow_key);
 #endif
+      }
+    }
+    // Swap MAC
+    struct rte_ether_addr temp_mac_addr = eth_hdr->s_addr;
+    eth_hdr->s_addr = eth_hdr->d_addr;
+    eth_hdr->d_addr = temp_mac_addr;
+  }
+
+  static void inline process_packet(struct rte_mbuf * m) {
+    switch (application) {
+    case RX_COUNT: // RX count
+      break;
+    case L2_FWD: // L2 forward
+      l2_forward(m, 0);
+      break;
+    case COUNT_MIN_SKETCH: // count min sketch + Workpackage
+      cms_count_add(m);
+      break;
+    case MAGLEV: // maglev load balancer
+      process_packet_maglev(m);
+      break;
+    case NAT: // nat
+      process_nat(m);
+      break;
+    case IDS:
+      process_ids(m);
+      break;
+    case DECRYPTION:
+      process_decryption(m);
+      break;
+    case MICA:
+      process_mica(m);
+      break;
+    case NITROSKETCH:
+      process_nitrosketch(m);
+      break;
+    default:
+      l2_forward(m, 0);
+      break;
     }
   }
-  // Swap MAC
-  struct rte_ether_addr temp_mac_addr = eth_hdr->s_addr;
-  eth_hdr->s_addr = eth_hdr->d_addr;
-  eth_hdr->d_addr = temp_mac_addr;
-  }
 
-static void inline process_packet(struct rte_mbuf *m) {
-  switch (application) {
-  case RX_COUNT: // RX count
-    break;
-  case L2_FWD: // L2 forward
-    l2_forward(m, 0);
-    break;
-  case COUNT_MIN_SKETCH: // count min sketch + Workpackage
-    cms_count_add(m);
-    break;
-  case MAGLEV: // maglev load balancer
-    process_packet_maglev(m);
-    break;
-  case NAT: // nat
-    process_nat(m);
-    break;
-  case IDS:
-    process_ids(m);
-    break;
-  case DECRYPTION:
-    process_decryption(m);
-    break;
-  case MICA:
-    process_mica(m);
-    break;
-  case NITROSKETCH:
-    process_nitrosketch(m);
-    break;
-  default:
-    l2_forward(m, 0);
-    break;
-  }
-}
+  /* main processing loop */
+  static void main_loop(void) {
+    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+    struct rte_mbuf *m;
+    int sent;
+    unsigned lcore_id;
+    uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
+    unsigned i, j, portid, nb_rx;
+    struct lcore_queue_conf *qconf;
+    const uint64_t drain_tsc =
+        (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
+    struct rte_eth_dev_tx_buffer *buffer;
 
-/* main processing loop */
-static void main_loop(void) {
-  struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-  struct rte_mbuf *m;
-  int sent;
-  unsigned lcore_id;
-  uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
-  unsigned i, j, portid, nb_rx;
-  struct lcore_queue_conf *qconf;
-  const uint64_t drain_tsc =
-      (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
-  struct rte_eth_dev_tx_buffer *buffer;
+    prev_tsc = 0;
+    timer_tsc = 0;
 
-  prev_tsc = 0;
-  timer_tsc = 0;
+    lcore_id = rte_lcore_id();
+    qconf = &lcore_queue_conf[lcore_id];
+    dev = &rte_eth_devices[0];
 
-  lcore_id = rte_lcore_id();
-  qconf = &lcore_queue_conf[lcore_id];
-  dev = &rte_eth_devices[0];
+    if (qconf->n_rx_port == 0) {
+      RTE_LOG(INFO, DOL, "lcore %u has nothing to do\n", lcore_id);
+      return;
+    }
 
-  if (qconf->n_rx_port == 0) {
-    RTE_LOG(INFO, DOL, "lcore %u has nothing to do\n", lcore_id);
-    return;
-  }
+    RTE_LOG(INFO, DOL, "entering main loop on lcore %u\n", lcore_id);
 
-  RTE_LOG(INFO, DOL, "entering main loop on lcore %u\n", lcore_id);
+    for (i = 0; i < qconf->n_rx_port; i++) {
 
-  for (i = 0; i < qconf->n_rx_port; i++) {
+      portid = qconf->rx_port_list[i];
+      RTE_LOG(INFO, DOL, " -- lcoreid=%u portid=%u\n", lcore_id, portid);
+      RTE_LOG(INFO, DOL, " -- lcoreid=%u portid=%u\n", lcore_id, portid);
+    }
 
-    portid = qconf->rx_port_list[i];
-    RTE_LOG(INFO, DOL, " -- lcoreid=%u portid=%u\n", lcore_id, portid);
-    RTE_LOG(INFO, DOL, " -- lcoreid=%u portid=%u\n", lcore_id, portid);
-  }
+    uint16_t pktid_prev = 255;
 
-  uint16_t pktid_prev = 255;
+    while (!force_quit) {
+      // if (total >300) {
+      //   print_stats();
+      //   break;
+      // }
+      cur_tsc = rte_rdtsc();
 
-  while (!force_quit) {
-    //if (total >300) {
-    //  print_stats();
-    //  break;
-    //}
-    cur_tsc = rte_rdtsc();
+      /*
+       * TX burst queue drain
+       */
+      diff_tsc = cur_tsc - prev_tsc;
+      if (unlikely(diff_tsc > drain_tsc)) {
 
-    /*
-     * TX burst queue drain
-     */
-    diff_tsc = cur_tsc - prev_tsc;
-    if (unlikely(diff_tsc > drain_tsc)) {
+        for (i = 0; i < qconf->n_rx_port; i++) {
 
-      for (i = 0; i < qconf->n_rx_port; i++) {
+          portid = dst_ports[qconf->rx_port_list[i]];
+          buffer = tx_buffer[portid];
+          sent = rte_eth_tx_buffer_flush(portid, 0, buffer);
+          if (sent)
+            port_stats[portid][0].tx += sent;
+        }
 
-        portid = dst_ports[qconf->rx_port_list[i]];
-        buffer = tx_buffer[portid];
-        sent = rte_eth_tx_buffer_flush(portid, 0, buffer);
-        if (sent)
-          port_stats[portid][0].tx += sent;
-      }
+        /* if timer is enabled */
+        if (timer_period > 0) {
 
-      /* if timer is enabled */
-      if (timer_period > 0) {
+          /* advance the timer */
+          timer_tsc += diff_tsc;
 
-        /* advance the timer */
-        timer_tsc += diff_tsc;
+          /* if timer has reached its timeout */
+          if (unlikely(timer_tsc >= timer_period)) {
 
-        /* if timer has reached its timeout */
-        if (unlikely(timer_tsc >= timer_period)) {
-
-          /* do this only on main core */
-          if (lcore_id == rte_get_main_lcore()) {
-            if (!silent)
-              print_stats();
-            /* reset the timer */
-            timer_tsc = 0;
+            /* do this only on main core */
+            if (lcore_id == rte_get_main_lcore()) {
+              if (!silent)
+                print_stats();
+              /* reset the timer */
+              timer_tsc = 0;
+            }
           }
         }
-      }
 
-      prev_tsc = cur_tsc;
-    }
-    /*
-     * Read packet from RX queues
-     */
-    int max_loops = 100;
-    for (i = 0; i < qconf->n_rx_port; i++) {
+        prev_tsc = cur_tsc;
+      }
+      /*
+       * Read packet from RX queues
+       */
+      int max_loops = 100;
+      for (i = 0; i < qconf->n_rx_port; i++) {
         portid = qconf->rx_port_list[i];
         for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
@@ -1111,15 +1099,15 @@ static void main_loop(void) {
               printf("pktid: %d\n", pkid);
               printf("pktid_prev: %d\n", pktid_prev);*/
             }
-            
-            if(debug) {
+
+            if (debug) {
               /*
               printf("Debug: Queue ID: %d   CMPL ID: %d\n", q,pkid);
               printf("Phys_addr: %p\n", (void*)rte_pktmbuf_mtod(m, void *));
-              int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m, void *)+31);
-              printf("Payload id: %ld\n", payload_id);
-              
-              
+              int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m,
+              void *)+31); printf("Payload id: %ld\n", payload_id);
+
+
               uint8_t* pkt_data = (uint8_t*)rte_pktmbuf_mtod(m, uint8_t *);
               printf("----------------------------------------------------\n");
               for (size_t i = 0; i < 64; i++) {
@@ -1131,15 +1119,16 @@ static void main_loop(void) {
               uint32_t pkt_len = rte_pktmbuf_pkt_len(m);
               // int64_t payload_id= *(uint32_t*)((uint8_t*)rte_pktmbuf_mtod(m,
               // void *)+31);
-              /* 
+              /*
               uint32_t tx_timestamp =
                   *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 43);
               uint32_t rx_timestamp =
                   *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 39);
-              printf("RX timestamp: %u, TX timestamp: %u\n", rx_timestamp, tx_timestamp);
+              printf("RX timestamp: %u, TX timestamp: %u\n", rx_timestamp,
+              tx_timestamp);
                   //uint32_t latency = tx_timestamp - rx_timestamp;
               */
-                  uint32_t payload_counter =
+              uint32_t payload_counter =
                   *(uint32_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 35);
               uint16_t qid =
                   *(uint16_t *)((uint8_t *)rte_pktmbuf_mtod(m, void *) + 26);
@@ -1148,23 +1137,28 @@ static void main_loop(void) {
                     "----------------------------------------------------\n");
                 printf("Debug: Queue ID mismatch! Expected: %d, Actual: %d\n",
                        q, qid);
-                printf("----------------------------------------------------\n");
-              
-                printf("----------------------------------------------------\n");
-                printf("----------------------------------------------------\n");
+                printf(
+                    "----------------------------------------------------\n");
+
+                printf(
+                    "----------------------------------------------------\n");
+                printf(
+                    "----------------------------------------------------\n");
                 printf("Q0 packet data:\n");
-                for (int k=0; k<1024; k++) {
+                for (int k = 0; k < 1024; k++) {
                   printf("packet %d:\n", k);
                   for (size_t i = 0; i < 32; i++) {
-                      printf("%X ", *(((uint8_t *)q0_phys_addr_start)+k*2368+ i));
+                    printf("%X ",
+                           *(((uint8_t *)q0_phys_addr_start) + k * 2368 + i));
                   }
                   printf("\n");
                 }
                 printf("Q1 packet data:\n");
-                for (int k=0; k<1024; k++) {
+                for (int k = 0; k < 1024; k++) {
                   printf("packet %d:\n", k);
                   for (size_t i = 0; i < 32; i++) {
-                      printf("%X ", *(((uint8_t *)q1_phys_addr_start)+k*2368+ i));
+                    printf("%X ",
+                           *(((uint8_t *)q1_phys_addr_start) + k * 2368 + i));
                   }
                   printf("\n");
                 }
@@ -1310,556 +1304,591 @@ static void main_loop(void) {
           }
         }
       }
+    }
+    if (application == NITROSKETCH) {
+#ifdef NITRO_CMS
+      print_sketch(nitro_cm, "output_dpdk_nitrosketch.txt");
+#endif
+#ifdef NITRO_CS
+      print_sketch(nitro_cs, "output_dpdk_nitrosketch.txt");
+#endif
+    }
   }
-  if (application == NITROSKETCH) {
-  #ifdef NITRO_CMS
-   print_sketch(nitro_cm, "output_dpdk_nitrosketch.txt");
-  #endif
-  #ifdef NITRO_CS
-   print_sketch(nitro_cs, "output_dpdk_nitrosketch.txt");
-  #endif
-  }
-}
 
-static int launch_one_lcore(void *arg) {
-  main_loop();
-  return 0;
-}
-
-/* display usage */
-static void usage(const char *prgname) {
-  printf("%s [EAL options] -- -p PORTMASK [-q NQ]\n"
-         "  -d N: number of descriptors > 32 (default is 1024)\n"
-         "  -p N: prefetch distance\n"
-         "  -c N: configure number of columns (default is 1048576)\n"
-         "  -P PORTMASK: hexadecimal bitmask of ports to configure\n"
-         "  -q NQ: number of queue (=ports) per lcore (default is 1)\n"
-         "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to "
-         "disable, 10 default, 86400 maximum)\n"
-         "  --[no-]mac-updating: Enable or disable MAC addresses updating "
-         "(enabled by default)\n"
-         "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to "
-         "disable, 10 default, 86400 maximum)\n"
-         "  --[no-]mac-updating: Enable or disable MAC addresses updating "
-         "(enabled by default)\n"
-         "      When enabled:\n"
-         "       - The source MAC address is replaced by the TX port MAC "
-         "address\n"
-         "       - The destination MAC address is replaced by "
-         "02:00:00:00:00:TX_PORT_ID\n"
-         "  --portmap: Configure forwarding port pair mapping\n"
-         "	      Default: alternate port pairs\n\n",
-         prgname);
-}
-
-static int parse_portmask(const char *portmask) {
-  char *end = NULL;
-  unsigned long pm;
-
-  /* parse hexadecimal string */
-  pm = strtoul(portmask, &end, 16);
-  if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
+  static int launch_one_lcore(void *arg) {
+    main_loop();
     return 0;
-
-  return pm;
-}
-
-static int parse_port_pair_config(const char *q_arg) {
-  enum fieldnames { FLD_PORT1 = 0, FLD_PORT2, _NUM_FLD };
-  unsigned long int_fld[_NUM_FLD];
-  const char *p, *p0 = q_arg;
-  char *str_fld[_NUM_FLD];
-  unsigned int size;
-  char s[256];
-  char *end;
-  int i;
-
-  nb_port_pair_params = 0;
-
-  while ((p = strchr(p0, '(')) != NULL) {
-    ++p;
-    p0 = strchr(p, ')');
-    if (p0 == NULL)
-      return -1;
-
-    size = p0 - p;
-    if (size >= sizeof(s))
-      return -1;
-
-    memcpy(s, p, size);
-    s[size] = '\0';
-    if (rte_strsplit(s, sizeof(s), str_fld, _NUM_FLD, ',') != _NUM_FLD)
-      return -1;
-    for (i = 0; i < _NUM_FLD; i++) {
-      errno = 0;
-      int_fld[i] = strtoul(str_fld[i], &end, 0);
-      if (errno != 0 || end == str_fld[i] || int_fld[i] >= RTE_MAX_ETHPORTS)
-        return -1;
-    }
-    if (nb_port_pair_params >= RTE_MAX_ETHPORTS / 2) {
-      printf("exceeded max number of port pair params: %hu\n",
-             nb_port_pair_params);
-      return -1;
-    }
-    port_pair_params_array[nb_port_pair_params].port[0] =
-        (uint16_t)int_fld[FLD_PORT1];
-    port_pair_params_array[nb_port_pair_params].port[1] =
-        (uint16_t)int_fld[FLD_PORT2];
-    ++nb_port_pair_params;
   }
-  port_pair_params = port_pair_params_array;
-  return 0;
-}
 
-static unsigned int parse_n(const char *arg) {
-  char *end = NULL;
-  unsigned long n;
+  /* display usage */
+  static void usage(const char *prgname) {
+    printf(
+        "%s [EAL options] -- -p PORTMASK [-q NQ]\n"
+        "  -d N: number of descriptors > 32 (default is 1024)\n"
+        "  -p N: prefetch distance\n"
+        "  -c N: configure number of columns (default is 1048576)\n"
+        "  -P PORTMASK: hexadecimal bitmask of ports to configure\n"
+        "  -q NQ: number of queue (=ports) per lcore (default is 1)\n"
+        "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to "
+        "disable, 10 default, 86400 maximum)\n"
+        "  --[no-]mac-updating: Enable or disable MAC addresses updating "
+        "(enabled by default)\n"
+        "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to "
+        "disable, 10 default, 86400 maximum)\n"
+        "  --[no-]mac-updating: Enable or disable MAC addresses updating "
+        "(enabled by default)\n"
+        "      When enabled:\n"
+        "       - The source MAC address is replaced by the TX port MAC "
+        "address\n"
+        "       - The destination MAC address is replaced by "
+        "02:00:00:00:00:TX_PORT_ID\n"
+        "  --portmap: Configure forwarding port pair mapping\n"
+        "	      Default: alternate port pairs\n\n",
+        prgname);
+  }
 
-  /* parse hexadecimal string */
-  n = strtoul(arg, &end, 10);
-  if ((arg[0] == '\0') || (end == NULL) || (*end != '\0'))
+  static int parse_portmask(const char *portmask) {
+    char *end = NULL;
+    unsigned long pm;
+
+    /* parse hexadecimal string */
+    pm = strtoul(portmask, &end, 16);
+    if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
+      return 0;
+
+    return pm;
+  }
+
+  static int parse_port_pair_config(const char *q_arg) {
+    enum fieldnames { FLD_PORT1 = 0, FLD_PORT2, _NUM_FLD };
+    unsigned long int_fld[_NUM_FLD];
+    const char *p, *p0 = q_arg;
+    char *str_fld[_NUM_FLD];
+    unsigned int size;
+    char s[256];
+    char *end;
+    int i;
+
+    nb_port_pair_params = 0;
+
+    while ((p = strchr(p0, '(')) != NULL) {
+      ++p;
+      p0 = strchr(p, ')');
+      if (p0 == NULL)
+        return -1;
+
+      size = p0 - p;
+      if (size >= sizeof(s))
+        return -1;
+
+      memcpy(s, p, size);
+      s[size] = '\0';
+      if (rte_strsplit(s, sizeof(s), str_fld, _NUM_FLD, ',') != _NUM_FLD)
+        return -1;
+      for (i = 0; i < _NUM_FLD; i++) {
+        errno = 0;
+        int_fld[i] = strtoul(str_fld[i], &end, 0);
+        if (errno != 0 || end == str_fld[i] || int_fld[i] >= RTE_MAX_ETHPORTS)
+          return -1;
+      }
+      if (nb_port_pair_params >= RTE_MAX_ETHPORTS / 2) {
+        printf("exceeded max number of port pair params: %hu\n",
+               nb_port_pair_params);
+        return -1;
+      }
+      port_pair_params_array[nb_port_pair_params].port[0] =
+          (uint16_t)int_fld[FLD_PORT1];
+      port_pair_params_array[nb_port_pair_params].port[1] =
+          (uint16_t)int_fld[FLD_PORT2];
+      ++nb_port_pair_params;
+    }
+    port_pair_params = port_pair_params_array;
     return 0;
-  if (n == 0)
+  }
+
+  static unsigned int parse_n(const char *arg) {
+    char *end = NULL;
+    unsigned long n;
+
+    /* parse hexadecimal string */
+    n = strtoul(arg, &end, 10);
+    if ((arg[0] == '\0') || (end == NULL) || (*end != '\0'))
+      return 0;
+    if (n == 0)
+      return 0;
+
+    return n;
+  }
+
+  static const char short_options[] = "c:" /* CMS columns  */
+                                      "k:" /* number of hash functions */
+                                      "r:" /* number of rand calls */
+                                      "Q"  /* silent */
+                                      "D"  /* dump pcap */
+                                      "B"  /* enable bypass */
+                                      "x"  /* enable debug */
+                                      "T"  /* enable retransmit */
+                                      "F"  /* enable freerunning */
+                                      "E"  /* enable elastic buffer */
+                                      "P:" /* portmask */
+                                      "q:" /* number of queues */
+                                      "p:" /* prefetch distance */
+                                      "d:" /* number of descriptors */
+                                      "a:" /* application */
+                                      "L"  /* enable LIFO */
+      ;
+
+  enum {
+    /* long options mapped to a short option */
+
+    /* first long only option value must be >= 256, so that we won't
+     * conflict with short options */
+    CMD_LINE_OPT_MIN_NUM = 256,
+    CMD_LINE_OPT_PORTMAP_NUM,
+  };
+
+  static const struct option lgopts[] = {
+      {CMD_LINE_OPT_MAC_UPDATING, no_argument, &mac_updating_flag, 1},
+      {CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating_flag, 0},
+      {CMD_LINE_OPT_PORTMAP_CONFIG, 1, 0, CMD_LINE_OPT_PORTMAP_NUM},
+      {NULL, 0, 0, 0}};
+
+  /* Parse the argument given in the command line of the application */
+  static int parse_args(int argc, char **argv) {
+    int opt, ret;
+    char **argvopt;
+    int option_index;
+    char *prgname = argv[0];
+
+    argvopt = argv;
+    argvopt = argv;
+    port_pair_params = NULL;
+
+    while ((opt = getopt_long(argc, argvopt, short_options, lgopts,
+                              &option_index)) != EOF) {
+      switch (opt) {
+      case 'a':
+        application = parse_n(optarg);
+        /* check application type*/
+        if (application < 0 || application > 9) {
+          printf("invalid application type\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'c':
+        cms_columns = parse_n(optarg);
+        /* check that cms_columns is a power of 2 */
+        if (cms_columns == 0 || (cms_columns & (cms_columns - 1)) != 0) {
+          printf("invalid number of columns\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'k':
+        num_hash = parse_n(optarg);
+        /* check that cms_columns is a power of 2 */
+        if (num_hash < 0) {
+          printf("invalid number of hash functions\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'r':
+        num_rand = parse_n(optarg);
+        /* check that cms_columns is a power of 2 */
+        if (num_rand < 0) {
+          printf("invalid number of rand calls\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'd':
+        nb_rxd = parse_n(optarg);
+        /* check that descriptors is a power of 2 */
+        if (nb_rxd < 32 || (nb_rxd & (nb_rxd - 1)) != 0) {
+          printf("invalid number of descriptors\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'p':
+        prefetch_distance = atoi(optarg);
+        break;
+      /* portmask */
+      case 'P':
+        enabled_port_mask = parse_portmask(optarg);
+        if (enabled_port_mask == 0) {
+          printf("invalid portmask\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+
+      /* nqueue */
+      case 'q':
+        rx_queue_per_lcore = parse_n(optarg);
+        if (rx_queue_per_lcore == 0) {
+          printf("invalid queue number\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'Q':
+        silent = true;
+        break;
+      case 'D':
+        dump = true;
+        break;
+      case 'L':
+        lifo = true;
+        break;
+      case 'B':
+        bypass = true;
+        break;
+      case 'x':
+        debug = true;
+        break;
+      case 'T':
+        retransmit = true;
+        break;
+      case 'E':
+        elastic = true;
+        break;
+      case 'F':
+        freerunning = 1;
+        break;
+      /* long options */
+      case CMD_LINE_OPT_PORTMAP_NUM:
+        ret = parse_port_pair_config(optarg);
+        if (ret) {
+          fprintf(stderr, "Invalid config\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+
+      default:
+        usage(prgname);
+        return -1;
+      }
+    }
+
+    if (optind >= 0)
+      argv[optind - 1] = prgname;
+    ret = optind - 1;
+    ret = optind - 1;
+    optind = 1; /* reset getopt lib */
+    return ret;
+  }
+
+  /*
+   * Check port pair config with enabled port mask,
+   * and for valid port pair combinations.
+   */
+  static int check_port_pair_config(void) {
+    uint32_t port_pair_config_mask = 0;
+    uint32_t port_pair_mask = 0;
+    uint16_t index, i, portid;
+
+    for (index = 0; index < nb_port_pair_params; index++) {
+      port_pair_mask = 0;
+
+      for (i = 0; i < NUM_PORTS; i++) {
+        portid = port_pair_params[index].port[i];
+        if ((enabled_port_mask & (1 << portid)) == 0) {
+          printf("port %u is not enabled in port mask\n", portid);
+          printf("port %u is not enabled in port mask\n", portid);
+          return -1;
+        }
+        if (!rte_eth_dev_is_valid_port(portid)) {
+          printf("port %u is not present on the board\n", portid);
+          printf("port %u is not present on the board\n", portid);
+          return -1;
+        }
+
+        port_pair_mask |= 1 << portid;
+      }
+
+      if (port_pair_config_mask & port_pair_mask) {
+        printf("port %u is used in other port pairs\n", portid);
+        return -1;
+      }
+      port_pair_config_mask |= port_pair_mask;
+    }
+
+    enabled_port_mask &= port_pair_config_mask;
+
     return 0;
-
-  return n;
-}
-
-static const char short_options[] = "c:" /* CMS columns  */
-                                    "k:" /* number of hash functions */
-                                    "r:" /* number of rand calls */
-                                    "Q"  /* silent */
-                                    "D"  /* dump pcap */
-                                    "B"  /* enable bypass */
-                                    "x"  /* enable debug */
-                                    "T"  /* enable retransmit */
-                                    "F"  /* enable freerunning */
-                                    "E"  /* enable elastic buffer */
-                                    "P:" /* portmask */
-                                    "q:" /* number of queues */
-                                    "p:" /* prefetch distance */
-                                    "d:" /* number of descriptors */
-                                    "a:" /* application */
-    ;
-
-enum {
-  /* long options mapped to a short option */
-
-  /* first long only option value must be >= 256, so that we won't
-   * conflict with short options */
-  CMD_LINE_OPT_MIN_NUM = 256,
-  CMD_LINE_OPT_PORTMAP_NUM,
-};
-
-static const struct option lgopts[] = {
-    {CMD_LINE_OPT_MAC_UPDATING, no_argument, &mac_updating_flag, 1},
-    {CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating_flag, 0},
-    {CMD_LINE_OPT_PORTMAP_CONFIG, 1, 0, CMD_LINE_OPT_PORTMAP_NUM},
-    {NULL, 0, 0, 0}};
-
-/* Parse the argument given in the command line of the application */
-static int parse_args(int argc, char **argv) {
-  int opt, ret;
-  char **argvopt;
-  int option_index;
-  char *prgname = argv[0];
-
-  argvopt = argv;
-  argvopt = argv;
-  port_pair_params = NULL;
-
-  while ((opt = getopt_long(argc, argvopt, short_options, lgopts,
-                            &option_index)) != EOF) {
-    switch (opt) {
-    case 'a':
-      application = parse_n(optarg);
-      /* check application type*/
-      if (application < 0 || application > 9) {
-        printf("invalid application type\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-    case 'c':
-      cms_columns = parse_n(optarg);
-      /* check that cms_columns is a power of 2 */
-      if (cms_columns == 0 || (cms_columns & (cms_columns - 1)) != 0) {
-        printf("invalid number of columns\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-    case 'k':
-      num_hash = parse_n(optarg);
-      /* check that cms_columns is a power of 2 */
-      if (num_hash < 0) {
-        printf("invalid number of hash functions\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-    case 'r':
-      num_rand = parse_n(optarg);
-      /* check that cms_columns is a power of 2 */
-      if (num_rand < 0) {
-        printf("invalid number of rand calls\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-    case 'd':
-      nb_rxd = parse_n(optarg);
-      /* check that descriptors is a power of 2 */
-      if (nb_rxd < 32 || (nb_rxd & (nb_rxd - 1)) != 0) {
-        printf("invalid number of descriptors\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-    case 'p':
-      prefetch_distance = atoi(optarg);
-      break;
-    /* portmask */
-    case 'P':
-      enabled_port_mask = parse_portmask(optarg);
-      if (enabled_port_mask == 0) {
-        printf("invalid portmask\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-
-    /* nqueue */
-    case 'q':
-      rx_queue_per_lcore = parse_n(optarg);
-      if (rx_queue_per_lcore == 0) {
-        printf("invalid queue number\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-    case 'Q':
-      silent = true;
-      break;
-    case 'D':
-      dump = true;
-      break;
-    case 'B':
-      bypass = true;
-      break;
-    case 'x':
-      debug = true;
-      break;
-    case 'T':
-      retransmit = true;
-      break;
-    case 'E':
-      elastic = true;
-      break;
-    case 'F':
-      freerunning = 1;
-      break;
-    /* long options */
-    case CMD_LINE_OPT_PORTMAP_NUM:
-      ret = parse_port_pair_config(optarg);
-      if (ret) {
-        fprintf(stderr, "Invalid config\n");
-        usage(prgname);
-        return -1;
-      }
-      break;
-
-    default:
-      usage(prgname);
-      return -1;
-    }
   }
 
-  if (optind >= 0)
-    argv[optind - 1] = prgname;
-  ret = optind - 1;
-  ret = optind - 1;
-  optind = 1; /* reset getopt lib */
-  return ret;
-}
+  /* Check the link status of all ports in up to 9s, and print them finally */
+  static void check_all_ports_link_status(uint32_t port_mask) {
+    uint16_t portid;
+    uint8_t count, all_ports_up, print_flag = 0;
+    struct rte_eth_link link;
+    int ret;
+    char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
-/*
- * Check port pair config with enabled port mask,
- * and for valid port pair combinations.
- */
-static int check_port_pair_config(void) {
-  uint32_t port_pair_config_mask = 0;
-  uint32_t port_pair_mask = 0;
-  uint16_t index, i, portid;
-
-  for (index = 0; index < nb_port_pair_params; index++) {
-    port_pair_mask = 0;
-
-    for (i = 0; i < NUM_PORTS; i++) {
-      portid = port_pair_params[index].port[i];
-      if ((enabled_port_mask & (1 << portid)) == 0) {
-        printf("port %u is not enabled in port mask\n", portid);
-        printf("port %u is not enabled in port mask\n", portid);
-        return -1;
-      }
-      if (!rte_eth_dev_is_valid_port(portid)) {
-        printf("port %u is not present on the board\n", portid);
-        printf("port %u is not present on the board\n", portid);
-        return -1;
-      }
-
-      port_pair_mask |= 1 << portid;
-    }
-
-    if (port_pair_config_mask & port_pair_mask) {
-      printf("port %u is used in other port pairs\n", portid);
-      return -1;
-    }
-    port_pair_config_mask |= port_pair_mask;
-  }
-
-  enabled_port_mask &= port_pair_config_mask;
-
-  return 0;
-}
-
-/* Check the link status of all ports in up to 9s, and print them finally */
-static void check_all_ports_link_status(uint32_t port_mask) {
-  uint16_t portid;
-  uint8_t count, all_ports_up, print_flag = 0;
-  struct rte_eth_link link;
-  int ret;
-  char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
-
-  printf("\nChecking link status");
-  fflush(stdout);
-  for (count = 0; count <= MAX_CHECK_TIME; count++) {
-    if (force_quit)
-      return;
-    all_ports_up = 1;
-    RTE_ETH_FOREACH_DEV(portid) {
+    printf("\nChecking link status");
+    fflush(stdout);
+    for (count = 0; count <= MAX_CHECK_TIME; count++) {
       if (force_quit)
         return;
-      if ((port_mask & (1 << portid)) == 0)
-        continue;
-      memset(&link, 0, sizeof(link));
-      ret = rte_eth_link_get_nowait(portid, &link);
-      if (ret < 0) {
-        all_ports_up = 0;
-        if (print_flag == 1)
-          printf("Port %u link get failed: %s\n", portid, rte_strerror(-ret));
-        continue;
+      all_ports_up = 1;
+      RTE_ETH_FOREACH_DEV(portid) {
+        if (force_quit)
+          return;
+        if ((port_mask & (1 << portid)) == 0)
+          continue;
+        memset(&link, 0, sizeof(link));
+        ret = rte_eth_link_get_nowait(portid, &link);
+        if (ret < 0) {
+          all_ports_up = 0;
+          if (print_flag == 1)
+            printf("Port %u link get failed: %s\n", portid, rte_strerror(-ret));
+          continue;
+        }
+        /* print link status if flag set */
+        if (print_flag == 1) {
+          rte_eth_link_to_str(link_status_text, sizeof(link_status_text),
+                              &link);
+          printf("Port %d %s\n", portid, link_status_text);
+          continue;
+        }
+        /* clear all_ports_up flag if any link down */
+        if (link.link_status == ETH_LINK_DOWN) {
+          all_ports_up = 0;
+          break;
+        }
       }
-      /* print link status if flag set */
-      if (print_flag == 1) {
-        rte_eth_link_to_str(link_status_text, sizeof(link_status_text), &link);
-        printf("Port %d %s\n", portid, link_status_text);
-        continue;
-      }
-      /* clear all_ports_up flag if any link down */
-      if (link.link_status == ETH_LINK_DOWN) {
-        all_ports_up = 0;
+      /* after finally printing all link status, get out */
+      if (print_flag == 1)
         break;
+
+      if (all_ports_up == 0) {
+        printf(".");
+        fflush(stdout);
+        rte_delay_ms(CHECK_INTERVAL);
+      }
+
+      /* set the print_flag if all ports up or timeout */
+      if (all_ports_up == 1 || count == (MAX_CHECK_TIME - 1)) {
+        print_flag = 1;
+        printf("done\n");
       }
     }
-    /* after finally printing all link status, get out */
-    if (print_flag == 1)
-      break;
-
-    if (all_ports_up == 0) {
-      printf(".");
-      fflush(stdout);
-      rte_delay_ms(CHECK_INTERVAL);
-    }
-
-    /* set the print_flag if all ports up or timeout */
-    if (all_ports_up == 1 || count == (MAX_CHECK_TIME - 1)) {
-      print_flag = 1;
-      printf("done\n");
-    }
-  }
-}
-
-static void signal_handler(int signum) {
-  if (signum == SIGINT || signum == SIGTERM) {
-    printf("\n\nSignal %d received, preparing to exit...\n", signum);
-    /*for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
-        uint64_t r_addr;
-        uint32_t r_tag;
-        uint8_t r_valid;
-        uint32_t r_num_desc;
-        qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid,
-      &r_num_desc); printf("q=%d addr: %lx tag:%u valid:%u
-      desc:%u\n",qid,r_addr,r_tag,r_valid,r_num_desc);
-      }*/
-
-    force_quit = true;
-  }
-  if (signum == SIGQUIT) {
-    // qdma_inv_rx_queue_ctxts(dev,0,1);
-    // qdma_clr_rx_queue_ctxts(dev,0,1);
-    /*uint16_t rx_cmpt_tail= get_cidx(dev->data->rx_queues[0]);
-    printf("Current RX completion tail: %u\n", rx_cmpt_tail);
-    int32_t val= qdma_reg_read(dev,0x1800C);
-          val &= 0xffff0000;
-          val += rx_cmpt_tail;
-          qdma_reg_write(dev,0x1800C,val);
-          rte_wmb();
-          val= qdma_reg_read(dev,0x1800C);
-    printf("cidx: %d\n",val &0x0ffff);*/
-    for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
-
-      uint16_t cidx;
-      if (!retransmit)
-        cidx = get_cidx(dev->data->rx_queues[q]);
-      else
-        cidx = get_cidx_tx(dev->data->tx_queues[q],
-                           elastic); // read updated cidx from TX queue
-      update_cidx(dev, q, cidx,
-                  prefetch_tag[q]); // update cidx to rearm the ring
-    }
-    printf("SIGQUIT received\n");
-  }
-}
-
-int main(int argc, char **argv) {
-  struct lcore_queue_conf *qconf;
-  int ret;
-  uint16_t nb_ports;
-  uint16_t nb_ports_available = 0;
-  uint16_t portid, last_port;
-  unsigned lcore_id, rx_lcore_id;
-  unsigned nb_ports_in_mask = 0;
-  unsigned int nb_lcores = 0;
-  unsigned int nb_mbufs;
-
-  setlocale(LC_NUMERIC, ""); // Usa locale di sistema per i separatori
-
-  /* init EAL */
-  ret = rte_eal_init(argc, argv);
-  if (ret < 0)
-    rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
-  argc -= ret;
-  argv += ret;
-
-  force_quit = false;
-  signal(SIGINT, signal_handler);
-  signal(SIGTERM, signal_handler);
-  signal(SIGQUIT, signal_handler);
-
-  rte_srand((unsigned)time(NULL));
-
-  /* parse application arguments (after the EAL ones) */
-  ret = parse_args(argc, argv);
-  if (ret < 0)
-    rte_exit(EXIT_FAILURE, "Invalid arguments\n");
-
-  printf("MAC updating %s\n", mac_updating_flag ? "enabled" : "disabled");
-
-  /* convert to number of cycles */
-  timer_period *= rte_get_timer_hz();
-
-  nb_ports = rte_eth_dev_count_avail();
-  if (nb_ports == 0)
-    rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
-
-  if (port_pair_params != NULL) {
-    if (check_port_pair_config() < 0)
-      rte_exit(EXIT_FAILURE, "Invalid port pair config\n");
   }
 
-  /* check port mask to possible port mask */
-  if (enabled_port_mask & ~((1 << nb_ports) - 1))
-    rte_exit(EXIT_FAILURE, "Invalid portmask; possible (0x%x)\n",
-             (1 << nb_ports) - 1);
+  static void signal_handler(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+      printf("\n\nSignal %d received, preparing to exit...\n", signum);
+      /*for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
+          uint64_t r_addr;
+          uint32_t r_tag;
+          uint8_t r_valid;
+          uint32_t r_num_desc;
+          qdma_read_queue_bypass_registers(dev, qid, &r_addr, &r_tag, &r_valid,
+        &r_num_desc); printf("q=%d addr: %lx tag:%u valid:%u
+        desc:%u\n",qid,r_addr,r_tag,r_valid,r_num_desc);
+        }*/
 
-  /* reset dst_ports */
-  for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
-    dst_ports[portid] = 0;
-  last_port = 0;
-
-  /* populate destination port details */
-  if (port_pair_params != NULL) {
-    uint16_t idx, p;
-
-    for (idx = 0; idx < (nb_port_pair_params << 1); idx++) {
-      p = idx & 1;
-      portid = port_pair_params[idx >> 1].port[p];
-      dst_ports[portid] = port_pair_params[idx >> 1].port[p ^ 1];
+      force_quit = true;
     }
-  } else {
+    if (signum == SIGQUIT) {
+      // qdma_inv_rx_queue_ctxts(dev,0,1);
+      // qdma_clr_rx_queue_ctxts(dev,0,1);
+      /*uint16_t rx_cmpt_tail= get_cidx(dev->data->rx_queues[0]);
+      printf("Current RX completion tail: %u\n", rx_cmpt_tail);
+      int32_t val= qdma_reg_read(dev,0x1800C);
+            val &= 0xffff0000;
+            val += rx_cmpt_tail;
+            qdma_reg_write(dev,0x1800C,val);
+            rte_wmb();
+            val= qdma_reg_read(dev,0x1800C);
+      printf("cidx: %d\n",val &0x0ffff);*/
+      for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
+
+        uint16_t cidx;
+        if (!retransmit)
+          cidx = get_cidx(dev->data->rx_queues[q]);
+        else
+          cidx = get_cidx_tx(dev->data->tx_queues[q],
+                             elastic); // read updated cidx from TX queue
+        update_cidx(dev, q, cidx,
+                    prefetch_tag[q]); // update cidx to rearm the ring
+      }
+      printf("SIGQUIT received\n");
+    }
+  }
+
+  int main(int argc, char **argv) {
+    struct lcore_queue_conf *qconf;
+    int ret;
+    uint16_t nb_ports;
+    uint16_t nb_ports_available = 0;
+    uint16_t portid, last_port;
+    unsigned lcore_id, rx_lcore_id;
+    unsigned nb_ports_in_mask = 0;
+    unsigned int nb_lcores = 0;
+    unsigned int nb_mbufs;
+
+    setlocale(LC_NUMERIC, ""); // Usa locale di sistema per i separatori
+
+    /* init EAL */
+    ret = rte_eal_init(argc, argv);
+    if (ret < 0)
+      rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
+    argc -= ret;
+    argv += ret;
+
+    force_quit = false;
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    signal(SIGQUIT, signal_handler);
+
+    rte_srand((unsigned)time(NULL));
+
+    /* parse application arguments (after the EAL ones) */
+    ret = parse_args(argc, argv);
+    if (ret < 0)
+      rte_exit(EXIT_FAILURE, "Invalid arguments\n");
+
+    printf("MAC updating %s\n", mac_updating_flag ? "enabled" : "disabled");
+
+    /* convert to number of cycles */
+    timer_period *= rte_get_timer_hz();
+
+    nb_ports = rte_eth_dev_count_avail();
+    if (nb_ports == 0)
+      rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+
+    if (port_pair_params != NULL) {
+      if (check_port_pair_config() < 0)
+        rte_exit(EXIT_FAILURE, "Invalid port pair config\n");
+    }
+
+    /* check port mask to possible port mask */
+    if (enabled_port_mask & ~((1 << nb_ports) - 1))
+      rte_exit(EXIT_FAILURE, "Invalid portmask; possible (0x%x)\n",
+               (1 << nb_ports) - 1);
+
+    /* reset dst_ports */
+    for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
+      dst_ports[portid] = 0;
+    last_port = 0;
+
+    /* populate destination port details */
+    if (port_pair_params != NULL) {
+      uint16_t idx, p;
+
+      for (idx = 0; idx < (nb_port_pair_params << 1); idx++) {
+        p = idx & 1;
+        portid = port_pair_params[idx >> 1].port[p];
+        dst_ports[portid] = port_pair_params[idx >> 1].port[p ^ 1];
+      }
+    } else {
+      RTE_ETH_FOREACH_DEV(portid) {
+        /* skip ports that are not enabled */
+        if ((enabled_port_mask & (1 << portid)) == 0)
+          continue;
+
+        if (nb_ports_in_mask % 2) {
+          dst_ports[portid] = last_port;
+          dst_ports[last_port] = portid;
+        } else {
+          last_port = portid;
+        }
+
+        nb_ports_in_mask++;
+      }
+      if (nb_ports_in_mask % 2) {
+        printf("Notice: odd number of ports in portmask.\n");
+        dst_ports[last_port] = last_port;
+      }
+    }
+
+    rx_lcore_id = 0;
+    qconf = NULL;
+
+    /* Initialize the port/queue configuration of each logical core */
     RTE_ETH_FOREACH_DEV(portid) {
       /* skip ports that are not enabled */
       if ((enabled_port_mask & (1 << portid)) == 0)
         continue;
 
-      if (nb_ports_in_mask % 2) {
-        dst_ports[portid] = last_port;
-        dst_ports[last_port] = portid;
-      } else {
-        last_port = portid;
+      /* get the lcore_id for this port */
+      while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
+             lcore_queue_conf[rx_lcore_id].n_rx_port == rx_queue_per_lcore) {
+        rx_lcore_id++;
+        if (rx_lcore_id >= RTE_MAX_LCORE)
+          rte_exit(EXIT_FAILURE, "Not enough cores\n");
       }
 
-      nb_ports_in_mask++;
-    }
-    if (nb_ports_in_mask % 2) {
-      printf("Notice: odd number of ports in portmask.\n");
-      dst_ports[last_port] = last_port;
-    }
-  }
-
-  rx_lcore_id = 0;
-  qconf = NULL;
-
-  /* Initialize the port/queue configuration of each logical core */
-  RTE_ETH_FOREACH_DEV(portid) {
-    /* skip ports that are not enabled */
-    if ((enabled_port_mask & (1 << portid)) == 0)
-      continue;
-
-    /* get the lcore_id for this port */
-    while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
-           lcore_queue_conf[rx_lcore_id].n_rx_port == rx_queue_per_lcore) {
-      rx_lcore_id++;
-      if (rx_lcore_id >= RTE_MAX_LCORE)
-        rte_exit(EXIT_FAILURE, "Not enough cores\n");
-    }
-
-    if (qconf != &lcore_queue_conf[rx_lcore_id]) {
-      /* Assigned a new logical core in the loop above. */
-      qconf = &lcore_queue_conf[rx_lcore_id];
-      nb_lcores++;
-    }
-
-    qconf->rx_port_list[qconf->n_rx_port] = portid;
-    qconf->n_rx_port++;
-    printf("Lcore %u: RX port %u TX port %u\n", rx_lcore_id, portid,
-           dst_ports[portid]);
-  }
-
-  nb_mbufs = RTE_MAX(
-      rx_queue_per_lcore * nb_ports *
-          (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE),
-      8192U);
-  printf("Creating mbuf pool with %u mbufs\n", nb_mbufs);
-
-  /* create the mbuf pool */
-  if (bypass) {
-    for (uint32_t i = 0; i < rx_queue_per_lcore; i++) {
-      char pool_name[32];
-      snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
-      nb_mbufs = nb_ports *
-            (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE);
-  
-      pktmbuf_pool[i] =
-        //rte_pktmbuf_pool_create(pool_name, nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
-        //                        RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-        create_extbuf_pool(pool_name,nb_ports, 1, nb_rxd, nb_txd, nb_lcores, rte_socket_id());
+      if (qconf != &lcore_queue_conf[rx_lcore_id]) {
+        /* Assigned a new logical core in the loop above. */
+        qconf = &lcore_queue_conf[rx_lcore_id];
+        nb_lcores++;
       }
-  }
-  else {
-    pktmbuf_pool[0] = rte_pktmbuf_pool_create("mbuf_pool", nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
-                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+
+      qconf->rx_port_list[qconf->n_rx_port] = portid;
+      qconf->n_rx_port++;
+      printf("Lcore %u: RX port %u TX port %u\n", rx_lcore_id, portid,
+             dst_ports[portid]);
+    }
+
+    nb_mbufs = RTE_MAX(
+        rx_queue_per_lcore * nb_ports *
+            (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE),
+        8192U);
+    printf("Creating mbuf pool with %u mbufs\n", nb_mbufs);
+
+    /* create the mbuf pool */
+    if (bypass) {
+      for (uint32_t i = 0; i < rx_queue_per_lcore; i++) {
+        char pool_name[32];
+        snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
+        nb_mbufs = nb_ports * (nb_rxd + nb_txd + MAX_PKT_BURST +
+                               nb_lcores * MEMPOOL_CACHE_SIZE);
+
+        pktmbuf_pool[i] =
+            // rte_pktmbuf_pool_create(pool_name, nb_mbufs, MEMPOOL_CACHE_SIZE,
+            // 0,
+            //                         RTE_MBUF_DEFAULT_BUF_SIZE,
+            //                         rte_socket_id());
+            create_extbuf_pool(pool_name, nb_ports, 1, nb_rxd, nb_txd,
+                               nb_lcores, rte_socket_id());
+      }
+    } else {
+      for (uint32_t i = 0; i < rx_queue_per_lcore; i++) {
+        if (!lifo) {
+          pktmbuf_pool[i] = rte_pktmbuf_pool_create(
+              "mbuf_pool", nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
+              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+        } else {
+          pktmbuf_pool[i] = rte_mempool_create_empty(
+              "mbuf_pool", nb_mbufs,
+              RTE_MBUF_DEFAULT_BUF_SIZE + sizeof(struct rte_mbuf),
+              MEMPOOL_CACHE_SIZE, sizeof(struct rte_pktmbuf_pool_private),
+              SOCKET_ID_ANY, rte_socket_id());
+          if (pktmbuf_pool[i] == NULL)
+            rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
+
+          if (rte_mempool_set_ops_byname(pktmbuf_pool[i], "stack", NULL) < 0)
+            rte_panic("mempool_set_ops stack failed\n");
+
+          struct rte_pktmbuf_pool_private *priv =
+              rte_mempool_get_priv(pktmbuf_pool[i]);
+
+          priv->mbuf_data_room_size = RTE_MBUF_DEFAULT_BUF_SIZE;
+          priv->mbuf_priv_size = 0;
+
+          if (rte_mempool_populate_default(pktmbuf_pool[i]) < 0)
+            rte_panic("mempool_populate_default failed\n");
+          rte_mempool_obj_iter(pktmbuf_pool[i], rte_pktmbuf_init, NULL);
+        }
+      }
+    }
   }
 
   /* Initialise each port */
@@ -1981,12 +2010,12 @@ int main(int argc, char **argv) {
       }
       if (bypass) {
         ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
-                                   rte_eth_dev_socket_id(portid), &rxq_conf,
-                                   pktmbuf_pool[qid]);
+                                     rte_eth_dev_socket_id(portid), &rxq_conf,
+                                     pktmbuf_pool[qid]);
       } else {
         ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
-                                   rte_eth_dev_socket_id(portid), &rxq_conf,
-                                   pktmbuf_pool[0]);
+                                     rte_eth_dev_socket_id(portid), &rxq_conf,
+                                     pktmbuf_pool[0]);
       }
       if (ret < 0)
         rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
@@ -2048,7 +2077,7 @@ int main(int argc, char **argv) {
 
     printf("done: \n");
     if (debug)
-	    qdma_write_bypass_reg_debug(dev, 1);
+      qdma_write_bypass_reg_debug(dev, 1);
     else
       qdma_write_bypass_reg_debug(dev, 0);
     if (bypass) {
@@ -2058,8 +2087,10 @@ int main(int argc, char **argv) {
         printf("---   Q=%d   ---\n", qid);
         print_phys(dev, qid);
         phys_addr = get_desc(dev, qid, 0);
-        if (qid==0) q0_phys_addr_start = phys_addr;
-        if (qid==1) q1_phys_addr_start = phys_addr;
+        if (qid == 0)
+          q0_phys_addr_start = phys_addr;
+        if (qid == 1)
+          q1_phys_addr_start = phys_addr;
 
         printf("Phys addr %08lx\n", phys_addr);
         qdma_write_queue_bypass_registers(dev, qid, phys_addr,
@@ -2080,7 +2111,7 @@ int main(int argc, char **argv) {
       // reset counters
       qdma_bypass_clear_counters(dev);
     }
-    
+
     printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
            ports_eth_addr[portid].addr_bytes[0],
            ports_eth_addr[portid].addr_bytes[1],

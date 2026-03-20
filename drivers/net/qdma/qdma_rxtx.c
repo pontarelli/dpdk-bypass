@@ -43,6 +43,13 @@
 #include "qdma_user.h"
 #include "rte_branch_prediction.h"
 
+#define PROFILE_START(name) uint64_t profile_##name = rte_rdtsc()
+#define PROFILE_END(name) do { \
+    uint64_t cycles = rte_rdtsc() - profile_##name; \
+    if (profile_##name % (1<<16) ==0) printf("[PROFILE] %s : %lu cycles (%.2f us)\n", #name, cycles, \
+           (double)cycles / (rte_get_tsc_hz() / 1000000.0)); \
+} while(0)
+
 /******** User logic dependent functions start **********/
 static int qdma_ul_extract_st_cmpt_info_v(void *ul_cmpt_entry, void *cmpt_info)
 {
@@ -1068,6 +1075,7 @@ static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc)
 uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				uint16_t nb_pkts)
 {
+	//PROFILE_START(recv_pkts_st);
 	uint16_t count_pkts;
 	struct wb_status *wb_status;
 	uint16_t nb_pkts_avail = 0;
@@ -1144,6 +1152,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
 	// If the bypass mode is enabled, use the bypass rearm function
 	if (!(rxq->en_bypass && rxq->en_bypass_prefetch)) {
+		//PROFILE_START(rearm);
 		c2h_pidx = rxq->q_pidx_info.pidx;
 		pending_desc = rxq->rx_tail - c2h_pidx - 1;
 		if (rxq->rx_tail < (c2h_pidx + 1))
@@ -1158,6 +1167,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			//else
 			//	rearm_c2h_ring_bypass(rxq);	
 		}
+		//PROFILE_END(rearm);
 	}
 #ifdef DUMP_MEMPOOL_USAGE_STATS
 	PMD_DRV_LOG(DEBUG, "%s(): %d: queue id = %d, mbuf_avail_count = %d,"
@@ -1172,6 +1182,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	PMD_DRV_LOG(DEBUG, " Recv complete with hw pidx :%d\n",
 				rxq->wb_status->pidx);
 
+	//PROFILE_END(recv_pkts_st);
 	return count_pkts;
 }
 
