@@ -1889,332 +1889,335 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         }
       }
     }
-  }
 
-  /* Initialise each port */
-  RTE_ETH_FOREACH_DEV(portid) {
-    struct rte_eth_rxconf rxq_conf;
-    struct rte_eth_txconf txq_conf;
-    struct rte_eth_conf local_port_conf = port_conf;
-    struct rte_eth_dev_info dev_info;
+    /* Initialise each port */
+    RTE_ETH_FOREACH_DEV(portid) {
+      struct rte_eth_rxconf rxq_conf;
+      struct rte_eth_txconf txq_conf;
+      struct rte_eth_conf local_port_conf = port_conf;
+      struct rte_eth_dev_info dev_info;
 
-    /* skip ports that are not enabled */
-    if ((enabled_port_mask & (1 << portid)) == 0) {
-      printf("Skipping disabled port %u\n", portid);
-      continue;
-    }
-    nb_ports_available++;
-
-    /* init port */
-    printf("Initializing port %u... ", portid);
-    fflush(stdout);
-
-    ret = rte_eth_dev_info_get(portid, &dev_info);
-    if (ret != 0)
-      rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n",
-               portid, strerror(-ret));
-
-    struct rte_eth_dev *dev = &rte_eth_devices[port_id];
-
-    // qdma_reg_write_usr(dev,0x000C,1); //QDMA reset
-    // qdma_reg_write_usr(dev,0x000C,2); //CMAC0 reset
-    // qdma_reg_write_usr(dev,0x000C,4); //CMAC1 reset
-    // rte_delay_ms(5000);
-
-    // local_port_conf.rxmode.mq_mode              = ETH_MQ_RX_RSS;
-    // local_port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
-    // ETH_RSS_TCP | ETH_RSS_UDP;
-
-    // modificare per mettere più code
-    ret = rte_eth_dev_configure(portid, rx_queue_per_lcore, rx_queue_per_lcore,
-                                &local_port_conf);
-    if (ret < 0)
-      rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n", ret,
-               portid);
-
-    // struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
-    uint32_t reg_offst = 0; // timestamp;
-    uint32_t val = qdma_reg_read_usr(dev, reg_offst);
-    // Timestamp--> QDMA Reg (0x0) Value: 0x28602ca
-    // 29/01/2026 0xc5a366e
-    printf("Timestamp--> QDMA Reg (0x%X) Value: 0x%X\n", reg_offst, val);
-    uint32_t cfg_val = qdma_reg_read(
-        dev, 0xBE0); // QDMA_CFG_OFFSET 0x001f0040 --> prefech cache size 64 OK!
-    printf("CFG VAL: 0x%08x\n", cfg_val);
-
-    struct rte_eth_rss_reta_entry64 reta_conf[2048 / RTE_RETA_GROUP_SIZE];
-    int i, j;
-    // crea l'indir table con valori da 0 a rx_queue_per_lcore
-    for (i = 0; i < dev_info.reta_size / RTE_RETA_GROUP_SIZE; i++) {
-      // select all fields to set //
-      reta_conf[i].mask = ~0LL;
-      for (j = 0; j < RTE_RETA_GROUP_SIZE; j++)
-        // da 0 a number of queues
-        reta_conf[i].reta[j] = 0;
-    }
-    // salva l'indir table sul device
-    ret = rte_eth_dev_rss_reta_update(portid, reta_conf, dev_info.reta_size);
-    if (ret < 0)
-      rte_exit(EXIT_FAILURE, "Cannot set RSS REA: err=%d, port=%u\n", ret,
-               portid);
-
-    rte_eth_dev_rss_reta_query(portid, reta_conf, dev_info.reta_size);
-    rx_queue_per_lcore = reta_conf[0].reta[0] + 1;
-    printf("rx_queue_per_lcore: %d\n", rx_queue_per_lcore);
-
-    rte_eth_dev_info_get(portid, &dev_info);
-
-    ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd, &nb_txd);
-    if (ret < 0)
-      rte_exit(EXIT_FAILURE,
-               "Cannot adjust number of descriptors: err=%d, "
-               "port=%u\n",
-               ret, portid);
-
-    ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
-    if (ret < 0)
-      rte_exit(EXIT_FAILURE, "Cannot get MAC address: err=%d, port=%u\n", ret,
-               portid);
-
-    int diag;
-    uint32_t qid;
-    uint32_t queue_base;
-    diag = rte_pmd_qdma_get_queue_base(portid, &queue_base);
-    if (diag < 0)
-      rte_exit(EXIT_FAILURE, "rte_pmd_qdma_get_queue_base : Querying of "
-                             "QUEUE_BASE failed\n");
-    // for loop sulle varie code
-    /* init one RX queue */
-    fflush(stdout);
-    rxq_conf = dev_info.default_rxconf;
-    rxq_conf.offloads = local_port_conf.rxmode.offloads;
-
-    for (qid = 0; qid < rx_queue_per_lcore; qid++) {
-      diag =
-          rte_pmd_qdma_set_queue_mode(portid, qid, RTE_PMD_QDMA_STREAMING_MODE);
-      if (diag < 0)
-        rte_exit(EXIT_FAILURE,
-                 "rte_pmd_qdma_set_queue_mode : "
-                 "Passing of STREAMING_MODE "
-                 "failed qid=%d\n",
-                 qid);
-
-      if (bypass) {
-        rte_pmd_qdma_configure_rx_bypass(
-            portid, qid, 2,
-            0); // RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2,
-        // Size 0 indicates internal mode descriptor size.
-      } else {
-        rte_pmd_qdma_configure_rx_bypass(portid, qid, 0,
-                                         0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
+      /* skip ports that are not enabled */
+      if ((enabled_port_mask & (1 << portid)) == 0) {
+        printf("Skipping disabled port %u\n", portid);
+        continue;
       }
-      if (bypass) {
-        ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
-                                     rte_eth_dev_socket_id(portid), &rxq_conf,
-                                     pktmbuf_pool[qid]);
-      } else {
-        ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
-                                     rte_eth_dev_socket_id(portid), &rxq_conf,
-                                     pktmbuf_pool[0]);
-      }
-      if (ret < 0)
-        rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n", ret,
-                 portid);
+      nb_ports_available++;
 
-      ret = rte_pmd_qdma_set_cmpt_overflow_check(port_id, qid, !freerunning);
-      if (ret < 0)
-        rte_exit(EXIT_FAILURE,
-                 "rte_pmd_qdma_set_cmpt_overflow_check:err=%d, port=%u\n", ret,
-                 portid);
-
-      if (bypass && (qid <= qmask)) {
-        if (qdma_bypass_reg_get_prefetch_tag(dev, qid, &prefetch_tag[qid])) {
-          printf("error reading prefetch tag\n");
-          return -1;
-        }
-        prefetch_tag[qid] &= 0x7f;
-        printf("Prefetch tag for qid=%d: %u\n", qid, prefetch_tag[qid]);
-      }
-      /* init one TX queuefor eacxh RX queue */
+      /* init port */
+      printf("Initializing port %u... ", portid);
       fflush(stdout);
-      txq_conf = dev_info.default_txconf;
-      txq_conf.offloads = local_port_conf.txmode.offloads;
-      ret = rte_eth_tx_queue_setup(portid, qid, nb_txd,
-                                   rte_eth_dev_socket_id(portid), &txq_conf);
+
+      ret = rte_eth_dev_info_get(portid, &dev_info);
+      if (ret != 0)
+        rte_exit(EXIT_FAILURE,
+                 "Error during getting device (port %u) info: %s\n", portid,
+                 strerror(-ret));
+
+      struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+
+      // qdma_reg_write_usr(dev,0x000C,1); //QDMA reset
+      // qdma_reg_write_usr(dev,0x000C,2); //CMAC0 reset
+      // qdma_reg_write_usr(dev,0x000C,4); //CMAC1 reset
+      // rte_delay_ms(5000);
+
+      // local_port_conf.rxmode.mq_mode              = ETH_MQ_RX_RSS;
+      // local_port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
+      // ETH_RSS_TCP | ETH_RSS_UDP;
+
+      // modificare per mettere più code
+      ret = rte_eth_dev_configure(portid, rx_queue_per_lcore,
+                                  rx_queue_per_lcore, &local_port_conf);
       if (ret < 0)
-        rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n", ret,
+        rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
+                 ret, portid);
+
+      // struct qdma_pci_dev *qdma_dev = dev->data->dev_private;
+      uint32_t reg_offst = 0; // timestamp;
+      uint32_t val = qdma_reg_read_usr(dev, reg_offst);
+      // Timestamp--> QDMA Reg (0x0) Value: 0x28602ca
+      // 29/01/2026 0xc5a366e
+      printf("Timestamp--> QDMA Reg (0x%X) Value: 0x%X\n", reg_offst, val);
+      uint32_t cfg_val = qdma_reg_read(
+          dev,
+          0xBE0); // QDMA_CFG_OFFSET 0x001f0040 --> prefech cache size 64 OK!
+      printf("CFG VAL: 0x%08x\n", cfg_val);
+
+      struct rte_eth_rss_reta_entry64 reta_conf[2048 / RTE_RETA_GROUP_SIZE];
+      int i, j;
+      // crea l'indir table con valori da 0 a rx_queue_per_lcore
+      for (i = 0; i < dev_info.reta_size / RTE_RETA_GROUP_SIZE; i++) {
+        // select all fields to set //
+        reta_conf[i].mask = ~0LL;
+        for (j = 0; j < RTE_RETA_GROUP_SIZE; j++)
+          // da 0 a number of queues
+          reta_conf[i].reta[j] = 0;
+      }
+      // salva l'indir table sul device
+      ret = rte_eth_dev_rss_reta_update(portid, reta_conf, dev_info.reta_size);
+      if (ret < 0)
+        rte_exit(EXIT_FAILURE, "Cannot set RSS REA: err=%d, port=%u\n", ret,
                  portid);
 
-      /* Initialize TX buffers */
-      tx_buffer[portid] =
-          rte_zmalloc_socket("tx_buffer", RTE_ETH_TX_BUFFER_SIZE(MAX_PKT_BURST),
-                             0, rte_eth_dev_socket_id(portid));
-      if (tx_buffer[portid] == NULL)
-        rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
-                 portid);
+      rte_eth_dev_rss_reta_query(portid, reta_conf, dev_info.reta_size);
+      rx_queue_per_lcore = reta_conf[0].reta[0] + 1;
+      printf("rx_queue_per_lcore: %d\n", rx_queue_per_lcore);
 
-      rte_eth_tx_buffer_init(tx_buffer[portid], MAX_PKT_BURST);
+      rte_eth_dev_info_get(portid, &dev_info);
 
-      ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[portid],
-                                               rte_eth_tx_buffer_count_callback,
-                                               &port_stats[portid][0].dropped);
+      ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd, &nb_txd);
       if (ret < 0)
         rte_exit(EXIT_FAILURE,
-                 "Cannot set error callback for tx buffer on port %u\n",
+                 "Cannot adjust number of descriptors: err=%d, "
+                 "port=%u\n",
+                 ret, portid);
+
+      ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+      if (ret < 0)
+        rte_exit(EXIT_FAILURE, "Cannot get MAC address: err=%d, port=%u\n", ret,
                  portid);
 
-      ret = rte_eth_dev_set_ptypes(portid, RTE_PTYPE_UNKNOWN, NULL, 0);
-      if (ret < 0)
-        printf("Port %u, Failed to disable Ptype parsing\n", portid);
+      int diag;
+      uint32_t qid;
+      uint32_t queue_base;
+      diag = rte_pmd_qdma_get_queue_base(portid, &queue_base);
+      if (diag < 0)
+        rte_exit(EXIT_FAILURE, "rte_pmd_qdma_get_queue_base : Querying of "
+                               "QUEUE_BASE failed\n");
+      // for loop sulle varie code
+      /* init one RX queue */
+      fflush(stdout);
+      rxq_conf = dev_info.default_rxconf;
+      rxq_conf.offloads = local_port_conf.rxmode.offloads;
 
-      // end queue loop
-    }
-    /* Start device */
-    ret = rte_eth_dev_start(portid);
-    if (ret < 0)
-      rte_exit(EXIT_FAILURE, "rte_eth_dev_start:err=%d, port=%u\n", ret,
-               portid);
-
-    printf("done: \n");
-    if (debug)
-      qdma_write_bypass_reg_debug(dev, 1);
-    else
-      qdma_write_bypass_reg_debug(dev, 0);
-    if (bypass) {
-      qdma_reg_write_usr(dev, 0x5150, qmask); // qmask
-      // qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
       for (qid = 0; qid < rx_queue_per_lcore; qid++) {
-        printf("---   Q=%d   ---\n", qid);
-        print_phys(dev, qid);
-        phys_addr = get_desc(dev, qid, 0);
-        if (qid == 0)
-          q0_phys_addr_start = phys_addr;
-        if (qid == 1)
-          q1_phys_addr_start = phys_addr;
+        diag = rte_pmd_qdma_set_queue_mode(portid, qid,
+                                           RTE_PMD_QDMA_STREAMING_MODE);
+        if (diag < 0)
+          rte_exit(EXIT_FAILURE,
+                   "rte_pmd_qdma_set_queue_mode : "
+                   "Passing of STREAMING_MODE "
+                   "failed qid=%d\n",
+                   qid);
 
-        printf("Phys addr %08lx\n", phys_addr);
-        qdma_write_queue_bypass_registers(dev, qid, phys_addr,
-                                          prefetch_tag[qid & qmask], 1, nb_rxd);
+        if (bypass) {
+          rte_pmd_qdma_configure_rx_bypass(
+              portid, qid, 2,
+              0); // RTE_PMD_QDMA_RX_BYPASS_SIMPLE = 2,
+          // Size 0 indicates internal mode descriptor size.
+        } else {
+          rte_pmd_qdma_configure_rx_bypass(
+              portid, qid, 0,
+              0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
+        }
+        if (bypass) {
+          ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
+                                       rte_eth_dev_socket_id(portid), &rxq_conf,
+                                       pktmbuf_pool[qid]);
+        } else {
+          ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
+                                       rte_eth_dev_socket_id(portid), &rxq_conf,
+                                       pktmbuf_pool[0]);
+        }
+        if (ret < 0)
+          rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n",
+                   ret, portid);
+
+        ret = rte_pmd_qdma_set_cmpt_overflow_check(port_id, qid, !freerunning);
+        if (ret < 0)
+          rte_exit(EXIT_FAILURE,
+                   "rte_pmd_qdma_set_cmpt_overflow_check:err=%d, port=%u\n",
+                   ret, portid);
+
+        if (bypass && (qid <= qmask)) {
+          if (qdma_bypass_reg_get_prefetch_tag(dev, qid, &prefetch_tag[qid])) {
+            printf("error reading prefetch tag\n");
+            return -1;
+          }
+          prefetch_tag[qid] &= 0x7f;
+          printf("Prefetch tag for qid=%d: %u\n", qid, prefetch_tag[qid]);
+        }
+        /* init one TX queuefor eacxh RX queue */
+        fflush(stdout);
+        txq_conf = dev_info.default_txconf;
+        txq_conf.offloads = local_port_conf.txmode.offloads;
+        ret = rte_eth_tx_queue_setup(portid, qid, nb_txd,
+                                     rte_eth_dev_socket_id(portid), &txq_conf);
+        if (ret < 0)
+          rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n",
+                   ret, portid);
+
+        /* Initialize TX buffers */
+        tx_buffer[portid] = rte_zmalloc_socket(
+            "tx_buffer", RTE_ETH_TX_BUFFER_SIZE(MAX_PKT_BURST), 0,
+            rte_eth_dev_socket_id(portid));
+        if (tx_buffer[portid] == NULL)
+          rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
+                   portid);
+
+        rte_eth_tx_buffer_init(tx_buffer[portid], MAX_PKT_BURST);
+
+        ret = rte_eth_tx_buffer_set_err_callback(
+            tx_buffer[portid], rte_eth_tx_buffer_count_callback,
+            &port_stats[portid][0].dropped);
+        if (ret < 0)
+          rte_exit(EXIT_FAILURE,
+                   "Cannot set error callback for tx buffer on port %u\n",
+                   portid);
+
+        ret = rte_eth_dev_set_ptypes(portid, RTE_PTYPE_UNKNOWN, NULL, 0);
+        if (ret < 0)
+          printf("Port %u, Failed to disable Ptype parsing\n", portid);
+
+        // end queue loop
       }
-      if (freerunning && debug)
-        qdma_write_bypass_reg_debug(dev, 3);
+      /* Start device */
+      ret = rte_eth_dev_start(portid);
+      if (ret < 0)
+        rte_exit(EXIT_FAILURE, "rte_eth_dev_start:err=%d, port=%u\n", ret,
+                 portid);
 
-      if (freerunning && !debug)
-        qdma_write_bypass_reg_debug(dev, 2);
+      printf("done: \n");
+      if (debug)
+        qdma_write_bypass_reg_debug(dev, 1);
+      else
+        qdma_write_bypass_reg_debug(dev, 0);
+      if (bypass) {
+        qdma_reg_write_usr(dev, 0x5150, qmask); // qmask
+        // qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
+        for (qid = 0; qid < rx_queue_per_lcore; qid++) {
+          printf("---   Q=%d   ---\n", qid);
+          print_phys(dev, qid);
+          phys_addr = get_desc(dev, qid, 0);
+          if (qid == 0)
+            q0_phys_addr_start = phys_addr;
+          if (qid == 1)
+            q1_phys_addr_start = phys_addr;
 
-      if (elastic && !debug)
-        qdma_write_bypass_reg_debug(dev, 4);
+          printf("Phys addr %08lx\n", phys_addr);
+          qdma_write_queue_bypass_registers(
+              dev, qid, phys_addr, prefetch_tag[qid & qmask], 1, nb_rxd);
+        }
+        if (freerunning && debug)
+          qdma_write_bypass_reg_debug(dev, 3);
 
-      if (elastic && debug)
-        qdma_write_bypass_reg_debug(dev, 5);
+        if (freerunning && !debug)
+          qdma_write_bypass_reg_debug(dev, 2);
 
-      // reset counters
-      qdma_bypass_clear_counters(dev);
+        if (elastic && !debug)
+          qdma_write_bypass_reg_debug(dev, 4);
+
+        if (elastic && debug)
+          qdma_write_bypass_reg_debug(dev, 5);
+
+        // reset counters
+        qdma_bypass_clear_counters(dev);
+      }
+
+      printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
+             ports_eth_addr[portid].addr_bytes[0],
+             ports_eth_addr[portid].addr_bytes[1],
+             ports_eth_addr[portid].addr_bytes[2],
+             ports_eth_addr[portid].addr_bytes[3],
+             ports_eth_addr[portid].addr_bytes[4],
+             ports_eth_addr[portid].addr_bytes[5]);
+
+      /* initialize port stats */
+      memset(&port_stats, 0, sizeof(port_stats));
     }
 
-    printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
-           ports_eth_addr[portid].addr_bytes[0],
-           ports_eth_addr[portid].addr_bytes[1],
-           ports_eth_addr[portid].addr_bytes[2],
-           ports_eth_addr[portid].addr_bytes[3],
-           ports_eth_addr[portid].addr_bytes[4],
-           ports_eth_addr[portid].addr_bytes[5]);
-
-    /* initialize port stats */
-    memset(&port_stats, 0, sizeof(port_stats));
-  }
-
-  if (!nb_ports_available) {
-    rte_exit(EXIT_FAILURE,
-             "All available ports are disabled. Please set portmask.\n");
-  }
-
-  // start
-
-  cm = rte_zmalloc(NULL, sizeof(struct countmin), 64);
-  cm->values = rte_zmalloc(NULL, sizeof(uint64_t *) * num_hash, 64);
-  for (int i = 0; i < num_hash; i++) {
-    cm->values[i] = rte_zmalloc(NULL, sizeof(uint64_t) * cms_columns, 64);
-  }
-
-  for (int i = 0; i < num_hash; i++) {
-    for (uint32_t j = 0; j < cms_columns; j++) {
-      cm->values[i][j] = 0;
-    }
-  }
-
-  check_all_ports_link_status(enabled_port_mask);
-
-  /* Initialize PCAP file for packet capture */
-  if (dump)
-    if (pcap_file_open("captured_packets.pcap") < 0) {
-      printf("Warning: Could not open PCAP file for writing\n");
+    if (!nb_ports_available) {
+      rte_exit(EXIT_FAILURE,
+               "All available ports are disabled. Please set portmask.\n");
     }
 
-  ret = 0;
-  /* launch per-lcore init on every lcore */
-  rte_eal_mp_remote_launch(launch_one_lcore, NULL, CALL_MAIN);
-  RTE_LCORE_FOREACH_WORKER(lcore_id) {
-    if (rte_eal_wait_lcore(lcore_id) < 0) {
-      ret = -1;
-      break;
+    // start
+
+    cm = rte_zmalloc(NULL, sizeof(struct countmin), 64);
+    cm->values = rte_zmalloc(NULL, sizeof(uint64_t *) * num_hash, 64);
+    for (int i = 0; i < num_hash; i++) {
+      cm->values[i] = rte_zmalloc(NULL, sizeof(uint64_t) * cms_columns, 64);
     }
-  }
 
-  printf("packets: %u\n", total);
-  printf("RX packets: %" PRIu64 "\n", stats.ipackets);
-  printf("TX packets: %" PRIu64 "\n", stats.opackets);
-  printf("RX dropped: %" PRIu64 "\n", stats.imissed);
-  printf("measured RX packets: %.2f\n", (float)measured_packets_rx);
-  printf("measured RX Throughput: %.2f\n",
-         (double)measured_packets_rx /
-             ((double)end_time / (double)rte_get_timer_hz()));
-  printf("measured time: %.2f seconds\n",
-         (double)end_time / (double)rte_get_timer_hz());
-
-  struct rte_eth_dev *dev = &rte_eth_devices[0];
-  int val = qdma_reg_read_usr(dev, 0x512C); // start from 1 to sync with CMPL id
-  printf("PKT COUNTER VAL: %d\n", val);
-
-  // save countmin in a file
-  /*FILE *fp;
-  fp = fopen("countmin.txt", "w");
-  for (int i = 0; i < num_hash; i++) {
-    for (int j = 0; j < cms_columns; j++) {
-      fprintf(fp, "%lu\n", cm->values[i][j]);
-      // printf("%lu\n", cm->values[i][j]);
+    for (int i = 0; i < num_hash; i++) {
+      for (uint32_t j = 0; j < cms_columns; j++) {
+        cm->values[i][j] = 0;
+      }
     }
-  }
-  fclose(fp);*/
 
-  if (bypass) {
-    for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
-      qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+    check_all_ports_link_status(enabled_port_mask);
+
+    /* Initialize PCAP file for packet capture */
+    if (dump)
+      if (pcap_file_open("captured_packets.pcap") < 0) {
+        printf("Warning: Could not open PCAP file for writing\n");
+      }
+
+    ret = 0;
+    /* launch per-lcore init on every lcore */
+    rte_eal_mp_remote_launch(launch_one_lcore, NULL, CALL_MAIN);
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+      if (rte_eal_wait_lcore(lcore_id) < 0) {
+        ret = -1;
+        break;
+      }
     }
+
+    printf("packets: %u\n", total);
+    printf("RX packets: %" PRIu64 "\n", stats.ipackets);
+    printf("TX packets: %" PRIu64 "\n", stats.opackets);
+    printf("RX dropped: %" PRIu64 "\n", stats.imissed);
+    printf("measured RX packets: %.2f\n", (float)measured_packets_rx);
+    printf("measured RX Throughput: %.2f\n",
+           (double)measured_packets_rx /
+               ((double)end_time / (double)rte_get_timer_hz()));
+    printf("measured time: %.2f seconds\n",
+           (double)end_time / (double)rte_get_timer_hz());
+
+    struct rte_eth_dev *dev = &rte_eth_devices[0];
+    int val =
+        qdma_reg_read_usr(dev, 0x512C); // start from 1 to sync with CMPL id
+    printf("PKT COUNTER VAL: %d\n", val);
+
+    // save countmin in a file
+    /*FILE *fp;
+    fp = fopen("countmin.txt", "w");
+    for (int i = 0; i < num_hash; i++) {
+      for (int j = 0; j < cms_columns; j++) {
+        fprintf(fp, "%lu\n", cm->values[i][j]);
+        // printf("%lu\n", cm->values[i][j]);
+      }
+    }
+    fclose(fp);*/
+
+    if (bypass) {
+      for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
+        qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+      }
+    }
+
+    RTE_ETH_FOREACH_DEV(portid) {
+      if ((enabled_port_mask & (1 << portid)) == 0)
+        continue;
+      printf("Closing port %d...", portid);
+      ret = rte_eth_dev_stop(portid);
+      if (ret != 0)
+        printf("rte_eth_dev_stop: err=%d, port=%d\n", ret, portid);
+      // rte_eth_dev_close(portid);
+      printf(" Done\n");
+    }
+    printf("Bye...\n");
+
+    /* Close PCAP file */
+    if (dump)
+      pcap_file_close();
+
+    // free countmin
+    for (int i = 0; i < num_hash; i++) {
+      rte_free(cm->values[i]);
+    }
+    rte_free(cm->values);
+    rte_free(cm);
+
+    return ret;
   }
-
-  RTE_ETH_FOREACH_DEV(portid) {
-    if ((enabled_port_mask & (1 << portid)) == 0)
-      continue;
-    printf("Closing port %d...", portid);
-    ret = rte_eth_dev_stop(portid);
-    if (ret != 0)
-      printf("rte_eth_dev_stop: err=%d, port=%d\n", ret, portid);
-    // rte_eth_dev_close(portid);
-    printf(" Done\n");
-  }
-  printf("Bye...\n");
-
-  /* Close PCAP file */
-  if (dump)
-    pcap_file_close();
-
-  // free countmin
-  for (int i = 0; i < num_hash; i++) {
-    rte_free(cm->values[i]);
-  }
-  rte_free(cm->values);
-  rte_free(cm);
-
-  return ret;
-}
