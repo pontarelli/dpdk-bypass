@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2016 Intel Corporation
  */
 
+#include "drivers/net/qdma/rte_pmd_qdma.h"
 #include "hashmap.h"
 #include "load_balancer.h"
 #include "nitrosketch/constants.h" // Include first
@@ -15,6 +16,7 @@
 #include "rte_pmd_qdma.h"
 #include "xxhash64.h"
 #include <arpa/inet.h>
+#include <charconv>
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -240,6 +242,7 @@ bool silent = false;
 bool dump = false;
 bool bypass = false;
 bool lifo = false;
+bool toasty = false;
 uint8_t freerunning = 0; /* cmpt overflow check mode: 0=disabled, 1=enabled */
 bool debug = false;
 bool elastic = false;
@@ -1436,6 +1439,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                                       "d:" /* number of descriptors */
                                       "a:" /* application */
                                       "L"  /* enable LIFO */
+                                      "t"  /* enable toasty logic */
       ;
 
   enum {
@@ -1557,6 +1561,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         break;
       case 'F':
         freerunning = 1;
+        break;
+      case 't':
+        toasty = 1;
         break;
       /* long options */
       case CMD_LINE_OPT_PORTMAP_NUM:
@@ -2009,6 +2016,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           rte_pmd_qdma_configure_rx_bypass(
               portid, qid, 0,
               0); // RTE_PMD_QDMA_RX_BYPASS_NONE = 0,
+        }
+        if (toasty) {
+          rte_pmd_qdma_enable_toasty_logic(portid, qid);
         }
         if (bypass) {
           ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,

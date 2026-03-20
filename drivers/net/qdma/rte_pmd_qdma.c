@@ -1817,24 +1817,23 @@ int rte_pmd_qdma_dev_close(uint16_t port_id)
 	return 0;
 }
 
-bool rte_pmd_qdma_enable_toasty_logic(uint16_t port_id, uint16_t queue_id)
+void rte_pmd_qdma_enable_toasty_logic(uint16_t port_id, uint16_t queue_id)
 {
 	struct rte_eth_dev *dev;
 	struct qdma_pci_dev *qdma_dev;
 
 	if (port_id >= rte_eth_dev_count_avail()) {
 		PMD_DRV_LOG(ERR, "Wrong port id %d\n", port_id);
-		return false;
+		return;
 	}
 	dev = &rte_eth_devices[port_id];
 	// Get struct rx_queue for the queue_id
 	if (queue_id >= dev->data->nb_rx_queues) {
 		PMD_DRV_LOG(ERR, "Wrong queue id %d\n", queue_id);
-		return false;
+		return;
 	}
 	qdma_dev = dev->data->dev_private;
 	// Set the toasty logic enable bit in the queue context
 	qdma_dev->q_info[queue_id].en_toasty_logic = 1;
 
-	return true;
 }

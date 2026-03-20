@@ -30,7 +30,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "net/atlantic/hw_atl/hw_atl_utils.h"
 #include "qdma.h"
 #include "qdma_access_common.h"
 #include <rte_cycles.h>
@@ -1125,7 +1124,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	  // Get the amount of packets that have been received between now and the last time we rearmed the ring, this is the N_{RXQ} in toasty paper
 	  uint32_t total_rx_packets = wb_status->cidx - rxq->previous_rxring_cidx; 
 	  // Number of entries in the RX ring that are available for allocation, this is the N_{avail} in toasty paper
-	  uint32_t entries_to_alloc = pending_desc; // this is the number of entries in the RX ring that are available for allocation, this is N_{avail} in toasty paper
+	  uint32_t entries_to_alloc = pending_desc; // number of entries allocatable in the RX ring, this is the N_{avail} in toasty paper
       // buffers which are not allocated
       uint32_t used_buff = rxq->nb_rx_desc - entries_to_alloc; // -N_{avail}
 
@@ -1198,12 +1197,11 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       }
 
 	  rxq->previous_rxring_cidx = wb_status->cidx;
-    }
+    } else if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD) {
 
     /* Batch the PIDX updates, this minimizes overhead on
      * descriptor engine
      */
-    if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD) {
       rearm_c2h_ring(rxq, pending_desc);
       // else
       //	rearm_c2h_ring_bypass(rxq);

@@ -732,7 +732,7 @@ uint16_t rte_pmd_qdma_mm_cmpt_process(int port_id, uint32_t qid,
  ******************************************************************************/
 int rte_pmd_qdma_dev_close(uint16_t port_id);
 
-bool rte_pmd_qdma_enable_toasty_logic(uint16_t port_id, uint16_t queue_id);
+void rte_pmd_qdma_enable_toasty_logic(uint16_t port_id, uint16_t queue_id);
 
 #ifdef __cplusplus
 }
