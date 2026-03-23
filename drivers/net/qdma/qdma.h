@@ -197,6 +197,7 @@ struct qdma_rx_queue {
 
 	uint16_t 		previous_rxring_cidx; /* used for tracking the previous cidx of rx ring for adaptive buffer allocation */
 	uint16_t		prev_c2h_pidx; /* used for tracking the previous pidx of c2h ring for adaptive buffer allocation */
+	uint16_t		prev_cmpt_pidx;
 	struct qdma_q_pidx_reg_info	q_pidx_info;
 	struct qdma_q_cmpt_cidx_reg_info cmpt_cidx_info;
 	struct qdma_pkt_stats	stats;

@@ -16,7 +16,6 @@
 #include "rte_pmd_qdma.h"
 #include "xxhash64.h"
 #include <arpa/inet.h>
-#include <charconv>
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>

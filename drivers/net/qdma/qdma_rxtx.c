@@ -41,6 +41,7 @@
 #include "rte_branch_prediction.h"
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <unistd.h>
 
 #define PROFILE_START(name) uint64_t profile_##name = rte_rdtsc()
@@ -1032,6 +1033,8 @@ static int rearm_c2h_ring(struct qdma_rx_queue *rxq, uint16_t num_desc) {
   return 0;
 }
 
+#define mfprintf(...) fprintf(__VA_ARGS__)
+//#define mfprintf(...) 
 /* Receive API for Streaming mode */
 uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
                            uint16_t nb_pkts) {
@@ -1119,23 +1122,67 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
     }
     // pending_desc is the number of descriptors that haven't been rearmed yet
 
-    // TODO: implement toasty logic here based on pending_desc and nb_pkts_avail
     if (rxq->toasty_enabled) {
-	  // Get the amount of packets that have been received between now and the last time we rearmed the ring, this is the N_{RXQ} in toasty paper
-	  uint32_t total_rx_packets = wb_status->cidx - rxq->previous_rxring_cidx; 
-	  // Number of entries in the RX ring that are available for allocation, this is the N_{avail} in toasty paper
-	  uint32_t entries_to_alloc = pending_desc; // number of entries allocatable in the RX ring, this is the N_{avail} in toasty paper
+      //TODO: 
+      // - I'm getting the wrong CIDX (probably the completion one) since it's going over 1024
+      // - total_rx_packets is always 0, probably because of the wrong CIDX, but also because of the way we calculate it
+      //   The two cidxs are correct when printed but the difference is sometimes 0 when it shouldn't
+      //   IDEA: use the completion pidx
+      // - total_rx_packets and other vars (result of difference between indices) must be wrapped DONE
+      // - trying to substitute 128 with 16 (half of our burst size) to see if it works better DONE
+      // - trying to use pkt_count for total_rx_packets instead of difference between indices, to see if it works better DONE
+
+
+      // Get the amount of packets that have been received between now and the
+      // last time we rearmed the ring, this is the N_{RXQ} in toasty paper
+      // Force reading of wb_status->cidx from memory to get the latest value
+      
+      uint32_t total_rx_packets = count_pkts;
+      uint32_t total_rx_packets_back = 0;
+      if (cmpt_pidx >= rxq->prev_cmpt_pidx)
+        total_rx_packets_back = cmpt_pidx - rxq->prev_cmpt_pidx;
+      else
+        total_rx_packets_back =
+            rxq->nb_rx_desc - 1 - rxq->prev_cmpt_pidx + cmpt_pidx;
+      mfprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
+      mfprintf(stderr, "count_pkts: %u\n", count_pkts);
+      mfprintf(stderr, "cidx: %u\n", wb_status->cidx);
+      mfprintf(stderr, "previous_rxring_cidx: %u\n", rxq->previous_rxring_cidx);
+      mfprintf(stderr, "total_rx_packets: %u\n", total_rx_packets);
+      mfprintf(stderr, "total_rx_packets_back: %u\n", total_rx_packets_back);
+      mfprintf(stderr, "nb_pkts_avail: %u\n", nb_pkts_avail);
+      //mfprintf(stderr, "total_rx_packets_back: %u\n", total_rx_packets_back);
+      mfprintf(stderr, "pidx: %u\n", rxq->q_pidx_info.pidx);
+      // Number of entries in the RX ring that are available for allocation,
+      // this is the N_{avail} in toasty paper
+      uint32_t entries_to_alloc =
+          pending_desc; // number of entries allocatable in the RX ring, this is
+                        // the N_{avail} in toasty paper
       // buffers which are not allocated
+      mfprintf(stderr, "entries_to_alloc: %u\n", pending_desc);
       uint32_t used_buff = rxq->nb_rx_desc - entries_to_alloc; // -N_{avail}
+      mfprintf(stderr, "nb_rx_desc: %u\n", rxq->nb_rx_desc);
+      mfprintf(stderr, "used_buff: %u\n", used_buff);
 
       // Adaptive RX buffer allocation
-      //uint32_t curr_producer = xsk_get_prod(xsk_pool);
+      // uint32_t curr_producer = xsk_get_prod(xsk_pool);
       uint16_t curr_producer = c2h_pidx;
-	  uint16_t prev_producer = rxq->prev_c2h_pidx; // this is the producer index at the time of last rearm
+      uint16_t prev_producer = rxq->prev_c2h_pidx; // this is the producer index
+                                                   // at the time of last rearm
 
-      uint32_t buff_to_alloc = curr_producer - prev_producer; // N_{FQ}
-      //uint32_t batch_limit = rx_ring->count / 8;
-      uint32_t batch_limit = rxq->nb_rx_desc / 8; // this is the max number of buffers we want to allocate in one go, TO BE TUNED
+      mfprintf(stderr, "curr_producer: %u\n", curr_producer);
+      mfprintf(stderr, "prev_producer: %u\n", prev_producer);
+      uint32_t buff_to_alloc = 0;
+      if (curr_producer >= prev_producer)
+        buff_to_alloc = curr_producer - prev_producer; // N_{FQ}
+      else
+        buff_to_alloc = curr_producer + (rxq->nb_rx_desc - 1) - prev_producer; // N_{FQ}
+      mfprintf(stderr, "buff_to_alloc: %u\n", buff_to_alloc);
+      // uint32_t batch_limit = rx_ring->count / 8;
+      uint32_t batch_limit =
+          rxq->nb_rx_desc / 8; // this is the max number of buffers we want to
+                               // allocate in one go, TO BE TUNED
+      mfprintf(stderr, "batch_limit: %u\n", batch_limit);
       uint32_t to_alloc = 0;
       bool force_sync = false;
 
@@ -1145,8 +1192,9 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       // k =10
       bool high_avail = (total_rx_packets > 0) &&
                         (used_buff >= total_rx_packets * 10); // true = riga 11
+      mfprintf(stderr, "high_avail: %u\n", high_avail);
 
-      if (total_rx_packets > 128 && !high_avail &&
+      if (total_rx_packets > 16 && !high_avail &&
           used_buff <= total_rx_packets) {
         uint32_t extra_to_alloc = total_rx_packets - used_buff;
 
@@ -1166,7 +1214,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
           to_alloc = total_rx_packets;
         }
       } else {
-        bool skip_alloc = (total_rx_packets <= 128 && total_rx_packets > 0 &&
+        bool skip_alloc = (total_rx_packets <= 16 && total_rx_packets > 0 &&
                            high_avail); // meta' del burst
 
         if (!skip_alloc) {
@@ -1186,22 +1234,25 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
         }
       }
 
+      rxq->prev_c2h_pidx = curr_producer;
+      rxq->previous_rxring_cidx = wb_status->cidx;
+      rxq->prev_cmpt_pidx = cmpt_pidx;
+      mfprintf(stderr, "to_alloc: %d\n", to_alloc);
       /* Perform the allocation */
       if (to_alloc > 0) {
-      	rearm_c2h_ring(rxq, to_alloc);
+        rearm_c2h_ring(rxq, to_alloc);
       }
 
       /* Synchronization / Drift correction */
-      if (force_sync || buff_to_alloc > (rxq->nb_rx_desc / 2)) {
-        rxq->prev_c2h_pidx = curr_producer;
-      }
+      //if (force_sync || buff_to_alloc > (rxq->nb_rx_desc / 2)) {
+      // pidx update was here
+      //}
 
-	  rxq->previous_rxring_cidx = wb_status->cidx;
     } else if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD) {
 
-    /* Batch the PIDX updates, this minimizes overhead on
-     * descriptor engine
-     */
+      /* Batch the PIDX updates, this minimizes overhead on
+       * descriptor engine
+       */
       rearm_c2h_ring(rxq, pending_desc);
       // else
       //	rearm_c2h_ring_bypass(rxq);
