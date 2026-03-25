@@ -1837,3 +1837,59 @@ void rte_pmd_qdma_enable_toasty_logic(uint16_t port_id, uint16_t queue_id)
 	qdma_dev->q_info[queue_id].en_toasty_logic = 1;
 
 }
+
+void rte_pmd_qdma_enable_shring_logic(uint16_t port_id, uint16_t queue_id)
+{
+	struct rte_eth_dev *dev;
+	struct qdma_pci_dev *qdma_dev;
+
+	if (port_id >= rte_eth_dev_count_avail()) {
+		PMD_DRV_LOG(ERR, "Wrong port id %d\n", port_id);
+		return;
+	}
+	dev = &rte_eth_devices[port_id];
+	// Get struct rx_queue for the queue_id
+	if (queue_id >= dev->data->nb_rx_queues) {
+		PMD_DRV_LOG(ERR, "Wrong queue id %d\n", queue_id);
+		return;
+	}
+	qdma_dev = dev->data->dev_private;
+	// Set the shring logic enable bit in the queue context
+	qdma_dev->q_info[queue_id].en_shring_logic = 1;
+
+}
+
+void rte_pmd_qdma_set_shring(uint16_t port_id, uint16_t queue_id,  uint16_t queue_id0)
+{
+	struct rte_eth_dev *dev;
+	
+	if (port_id >= rte_eth_dev_count_avail()) {
+		PMD_DRV_LOG(ERR, "Wrong port id %d\n", port_id);
+		return;
+	}
+	dev = &rte_eth_devices[port_id];
+	// Get struct rx_queue for the queue_id
+	if (queue_id >= dev->data->nb_rx_queues) {
+		PMD_DRV_LOG(ERR, "Wrong queue id %d\n", queue_id);
+		return;
+	}
+	if (queue_id0 >= dev->data->nb_rx_queues) {
+		PMD_DRV_LOG(ERR, "Wrong queue id %d\n", queue_id0);
+		return;
+	}
+	struct qdma_rx_queue *rxq = dev->data->rx_queues[queue_id];
+	struct qdma_rx_queue *sh_rxq = dev->data->rx_queues[queue_id0];
+
+	// Set the shring shared ring pointer in the rx_queue structure
+	rxq->shring_rxq = sh_rxq;
+
+	if (sh_rxq->shring_bitmap ==NULL) {
+		// Allocate memory for the shring bitmap
+		sh_rxq->shring_bitmap = rte_zmalloc("shring_bitmap", sizeof(uint64_t) *64, RTE_CACHE_LINE_SIZE);
+		if (sh_rxq->shring_bitmap == NULL) {
+			PMD_DRV_LOG(ERR, "Failed to allocate memory for shring bitmap\n");
+			return;
+		}
+	}
+}
+

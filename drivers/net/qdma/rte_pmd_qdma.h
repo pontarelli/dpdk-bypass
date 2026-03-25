@@ -734,6 +734,10 @@ int rte_pmd_qdma_dev_close(uint16_t port_id);
 
 void rte_pmd_qdma_enable_toasty_logic(uint16_t port_id, uint16_t queue_id);
 
+void rte_pmd_qdma_enable_shring_logic(uint16_t port_id, uint16_t queue_id);
+
+void rte_pmd_qdma_set_shring(uint16_t port_id, uint16_t queue_id,  uint16_t queue_id0);
+
 #ifdef __cplusplus
 }
 #endif

@@ -793,6 +793,107 @@ static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
   return first_seg;
 }
 
+#define BIT(x) (1 << (( x) & 63))
+#define WORD(x) (( x) >> 6)
+#define ISSET(bmp , x) (bmp[WORD(x)] & BIT(x))
+#define THRESHOLD		(64)
+  
+static inline bool after(uint32_t seq1, uint32_t seq2, uint32_t mask) {
+	return (seq1 > seq2) ?
+		((seq1 - seq2) >= THRESHOLD) :
+		((seq1 + mask - seq2) >= THRESHOLD);
+}
+
+/* Update mbuf for a segmented packet */
+static struct rte_mbuf *prepare_segmented_packet_shared(struct qdma_rx_queue *sh_rxq,
+                                                 uint16_t pkt_length,
+                                                 uint16_t pkt_id
+                                                 ) {
+  struct rte_mbuf *mb;
+  struct rte_mbuf *first_seg = NULL;
+  struct rte_mbuf *last_seg = NULL;
+  uint16_t id = pkt_id % (sh_rxq->nb_rx_desc - 2); //AND: con - 2 funziona, nella funziona di setup delle code c'e' -2 quando non usiamo bypass
+  uint16_t length;
+  uint16_t rx_buff_size = sh_rxq->rx_buff_size;
+  uint16_t tail=sh_rxq->rx_tail;
+
+  // Dump input parameters
+  //fprintf(stderr, "sh_rxq %p\n", (void *)sh_rxq);
+  //fprintf(stderr, "pkt_length: %u, pkt_id: %u\n", pkt_length, pkt_id);
+  //fprintf(stderr, "Initial id: %u, tail: %u\n", id, tail);
+
+  do {
+    //fprintf(stderr, "mb %p\n", (void *)sh_rxq->sw_ring[id]);
+    mb = sh_rxq->sw_ring[id];
+    sh_rxq->sw_ring[id] = NULL;
+
+    length = pkt_length;
+
+    if (pkt_length > rx_buff_size) {
+      rte_pktmbuf_data_len(mb) = rx_buff_size;
+      pkt_length -= rx_buff_size;
+    } else {
+      rte_pktmbuf_data_len(mb) = pkt_length;
+      pkt_length = 0;
+    }
+    rte_mbuf_refcnt_set(mb, 1);
+    if (first_seg == NULL) {
+      first_seg = mb;
+      first_seg->nb_segs = 1;
+      first_seg->pkt_len = length;
+      first_seg->packet_type = 0;
+      first_seg->ol_flags = 0;
+      first_seg->port = sh_rxq->port_id;
+      first_seg->vlan_tci = 0;
+      first_seg->hash.rss = 0;
+    } else {
+      first_seg->nb_segs++;
+      if (last_seg != NULL)
+        last_seg->next = mb;
+    }
+
+    last_seg = mb;
+    mb->next = NULL;
+  } while (pkt_length);
+
+  //fprintf(stderr, "Before setting bitmap for id %u\n", id);
+  //AND: added "-1" perche' mi sembra che i packet ids partano da 1
+  atomic_bittestandset_x86(&sh_rxq->shring_bitmap[WORD(id)], (id & 63));
+  fprintf(stderr, "Set bitmap for id %u tail %u\n", id, tail);
+  fprintf(stderr, "Word idx: %u, word : %lu, bit set: %u\n", WORD(id), sh_rxq->shring_bitmap[WORD(id)], (id & 63));
+  
+  //fprintf (stderr, "After setting bitmap for id %u\n", id);
+  if (id == tail+1 || (tail==sh_rxq->nb_rx_desc-1 && id==0)) {
+    fprintf(stderr, "Updating tail from %u\n", tail);
+    //TODO: the wrapping case
+    while (ISSET(sh_rxq->shring_bitmap, tail+1)) {
+      fprintf(stderr, "isset for tail %u\n", tail+1);
+      //sh_rxq->shring_bitmap[WORD(tail)] &= ~BIT(tail); 
+      atomic_bittestandreset_x86(&sh_rxq->shring_bitmap[WORD(tail+1)], (tail & 63));
+      tail = (tail + 1) % (sh_rxq->nb_rx_desc - 2);
+    }
+    sh_rxq->rx_tail=tail; 
+  }
+
+  /*
+  bool do_update= after(id,tail,sh_rxq->nb_rx_desc);
+  do_update &= (id % THRESHOLD == 0); // Update tail only when id is multiple of THRESHOLD (64)
+  if (do_update) {
+      uint16_t update_tail = tail + THRESHOLD;
+      update_tail = (update_tail >= sh_rxq->nb_rx_desc) ? (update_tail - sh_rxq->nb_rx_desc) : update_tail;
+      uint64_t blk = __atomic_load_n(&rxq->shring_bitmap[WORD(update_tail)], __ATOMIC_RELAXED);
+      if (blk ==0xffffffff) {
+          __atomic_store_n(&sh_rxq->shring_bitmap[WORD(tail)], 0, __ATOMIC_ACQUIRE);
+          __atomic_compare_exchange_n(&sh_rxq->rx_tail, &tail, update_tail, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED));
+			}
+	}
+  */
+
+  //fprintf(stderr, "Final id: %u, tail: %u\n", id, sh_rxq->rx_tail);
+  
+  return first_seg;
+}
+
 /* Prepare mbuf for one packet */
 /*static inline
 struct rte_mbuf *prepare_single_packet(struct qdma_rx_queue *rxq,
@@ -851,7 +952,15 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
     if (pkt_length) {
       rxq->stats.pkts++;
       rxq->stats.bytes += pkt_length;
-      mb = prepare_segmented_packet(rxq, pkt_length, &rxq->rx_tail, wrap);
+      if (rxq->shring_enabled) {
+        //fprintf(stderr, "before prep packet shring \n");
+        mb = prepare_segmented_packet_shared(rxq->shring_rxq, pkt_length, pkt_id);
+        //fprintf(stderr, "after prep packet shring \n");
+        //manca l'update della tail con la bitmap!
+      } else {
+        mb = prepare_segmented_packet(rxq, pkt_length, &rxq->rx_tail, wrap);
+      }  
+      
       mb->timesync = pkt_id;
       mb->dynfield1[0] = wrap;
       rx_pkts[count_pkts++] = mb;
@@ -1120,14 +1229,16 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
     if (rxq->rx_tail < (c2h_pidx + 1)) {
       pending_desc = rxq->nb_rx_desc - 2 + rxq->rx_tail - c2h_pidx;
     }
+    //fprintf(stderr, "Pending desc: %u\n", pending_desc);
     // pending_desc is the number of descriptors that haven't been rearmed yet
 
+    #define HALF_LINK_THRESHOLD 64
     if (rxq->toasty_enabled) {
       //TODO: 
-      // - I'm getting the wrong CIDX (probably the completion one) since it's going over 1024
-      // - total_rx_packets is always 0, probably because of the wrong CIDX, but also because of the way we calculate it
-      //   The two cidxs are correct when printed but the difference is sometimes 0 when it shouldn't
-      //   IDEA: use the completion pidx
+      // - I'm getting the wrong CIDX (probably the completion one) since it's going over 1024 -> TRUE, in ST mode no RX CIDX is written by the NIC
+      // - total_rx_packets is always 0, probably because of the wrong CIDX, but also because of the way we calculate it -> TRUE, point above
+      //   The two cidxs are correct when printed but the difference is sometimes 0 when it shouldn't -> synch issue? dma_synch stuff?
+      //   IDEA: use the completion pidx -> should be a proxy for the #pkts DMAed by the NIC 
       // - total_rx_packets and other vars (result of difference between indices) must be wrapped DONE
       // - trying to substitute 128 with 16 (half of our burst size) to see if it works better DONE
       // - trying to use pkt_count for total_rx_packets instead of difference between indices, to see if it works better DONE
@@ -1137,17 +1248,21 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       // last time we rearmed the ring, this is the N_{RXQ} in toasty paper
       // Force reading of wb_status->cidx from memory to get the latest value
       
-      uint32_t total_rx_packets = count_pkts;
-      uint32_t total_rx_packets_back = 0;
+      uint32_t total_rx_packets_count = count_pkts;
+      uint32_t total_rx_packets_back;
       if (cmpt_pidx >= rxq->prev_cmpt_pidx)
         total_rx_packets_back = cmpt_pidx - rxq->prev_cmpt_pidx;
       else
         total_rx_packets_back =
-            rxq->nb_rx_desc - 1 - rxq->prev_cmpt_pidx + cmpt_pidx;
+            rxq->nb_rx_cmpt_desc - 1 - rxq->prev_cmpt_pidx + cmpt_pidx;
+      // insert read memory barrier here to make sure we have the latest value of cidx and pidx, and consequently of total_rx_packets_back
+      rte_rmb();
+      //uint32_t total_rx_packets = total_rx_packets_count;
+      uint32_t total_rx_packets = total_rx_packets_back;
       mfprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
       mfprintf(stderr, "count_pkts: %u\n", count_pkts);
-      mfprintf(stderr, "cidx: %u\n", wb_status->cidx);
-      mfprintf(stderr, "previous_rxring_cidx: %u\n", rxq->previous_rxring_cidx);
+      mfprintf(stderr, "cmpt pidx: %u\n", cmpt_pidx);
+      mfprintf(stderr, "prev_cmpt_pidx: %u\n", rxq->prev_cmpt_pidx);
       mfprintf(stderr, "total_rx_packets: %u\n", total_rx_packets);
       mfprintf(stderr, "total_rx_packets_back: %u\n", total_rx_packets_back);
       mfprintf(stderr, "nb_pkts_avail: %u\n", nb_pkts_avail);
@@ -1160,7 +1275,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
                         // the N_{avail} in toasty paper
       // buffers which are not allocated
       mfprintf(stderr, "entries_to_alloc: %u\n", pending_desc);
-      uint32_t used_buff = rxq->nb_rx_desc - entries_to_alloc; // -N_{avail}
+      uint32_t used_buff = rxq->nb_rx_desc - 1 - entries_to_alloc; // -N_{avail}
       mfprintf(stderr, "nb_rx_desc: %u\n", rxq->nb_rx_desc);
       mfprintf(stderr, "used_buff: %u\n", used_buff);
 
@@ -1190,11 +1305,12 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       // Some things are hard coded, can change it to function call.
       // total_rx_packets N{RXQ}
       // k =10
+      // TODO: try to remove the total_rx_packet > 0 condition
       bool high_avail = (total_rx_packets > 0) &&
                         (used_buff >= total_rx_packets * 10); // true = riga 11
       mfprintf(stderr, "high_avail: %u\n", high_avail);
 
-      if (total_rx_packets > 16 && !high_avail &&
+      if (total_rx_packets > HALF_LINK_THRESHOLD && !high_avail &&
           used_buff <= total_rx_packets) {
         uint32_t extra_to_alloc = total_rx_packets - used_buff;
 
@@ -1214,7 +1330,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
           to_alloc = total_rx_packets;
         }
       } else {
-        bool skip_alloc = (total_rx_packets <= 16 && total_rx_packets > 0 &&
+        bool skip_alloc = (total_rx_packets <= HALF_LINK_THRESHOLD && total_rx_packets > 0 &&
                            high_avail); // meta' del burst
 
         if (!skip_alloc) {
@@ -1234,7 +1350,6 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
         }
       }
 
-      rxq->prev_c2h_pidx = curr_producer;
       rxq->previous_rxring_cidx = wb_status->cidx;
       rxq->prev_cmpt_pidx = cmpt_pidx;
       mfprintf(stderr, "to_alloc: %d\n", to_alloc);
@@ -1244,18 +1359,30 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       }
 
       /* Synchronization / Drift correction */
-      //if (force_sync || buff_to_alloc > (rxq->nb_rx_desc / 2)) {
+      if (force_sync || buff_to_alloc > (rxq->nb_rx_desc / 2)) {
       // pidx update was here
-      //}
+        rxq->prev_c2h_pidx = curr_producer;
+      }
 
     } else if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD) {
 
-      /* Batch the PIDX updates, this minimizes overhead on
+       /* Batch the PIDX updates, this minimizes overhead on
        * descriptor engine
        */
-      rearm_c2h_ring(rxq, pending_desc);
-      // else
-      //	rearm_c2h_ring_bypass(rxq);
+      //fprintf(stderr, "rearming!\n");
+      if (rxq->shring_enabled) {
+        mfprintf(stderr, "before rearm shring \n");
+        c2h_pidx = rxq->shring_rxq->q_pidx_info.pidx;
+        pending_desc = rxq->shring_rxq->rx_tail - c2h_pidx - 1;
+        if (rxq->shring_rxq->rx_tail < (c2h_pidx + 1)) {
+          pending_desc = rxq->shring_rxq->nb_rx_desc - 2 + rxq->shring_rxq->rx_tail - c2h_pidx;
+        }
+        rearm_c2h_ring(rxq->shring_rxq, pending_desc);
+        mfprintf(stderr, "after rearm shring \n");
+      }
+      else {
+        rearm_c2h_ring(rxq, pending_desc);
+      }
     }
     // PROFILE_END(rearm);
   }
