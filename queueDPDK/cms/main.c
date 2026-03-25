@@ -1284,8 +1284,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           }
 
           // rearm!
-          // if (bypass && (nb_rx > 0)) {
-          if (bypass) {
+          if (bypass && (nb_rx > 0)) {
+          //if (bypass) {
             uint16_t cidx;
             if (!retransmit)
               cidx = get_cidx(dev->data->rx_queues[q]);
