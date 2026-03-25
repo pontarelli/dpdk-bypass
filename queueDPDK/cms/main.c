@@ -712,6 +712,16 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   /* Look for known sessions */
   struct replace_info *rep = hashmap_lookup_elem(&active_sessions, &sid);
   if (rep) {
+    // Replace the destination IP and port with the backend's IP and port
+    if (rep->dir == DIR_TO_BACKEND) {
+      ip->daddr = rep->addr;
+      udp->dest = rep->port;
+      memcpy(eth->d_addr.addr_bytes, rep->mac_addr, sizeof(eth->d_addr));
+    } else {
+      ip->saddr = rep->addr;
+      udp->source = rep->port;
+      memcpy(eth->s_addr.addr_bytes, rep->mac_addr, sizeof(eth->s_addr));
+    }
     return;
   }
 
