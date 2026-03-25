@@ -71,7 +71,7 @@
  */
 #define RTE_TEST_RX_DESC_DEFAULT 1024
 #define RTE_TEST_TX_DESC_DEFAULT 1024
-#define MAX_RX_QUEUE_PER_LCORE 2048
+#define MAX_RX_QUEUE 2048
 #define MAX_TX_QUEUE_PER_PORT 2048
 
 #define abs(x) ((x) < 0 ? -(x) : (x))
@@ -251,6 +251,7 @@ uint64_t end_time = 0;
 
 uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+uint16_t rx_queue_per_core;
 
 /* ethernet addresses of ports */
 static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
@@ -272,11 +273,11 @@ static struct port_pair_params *port_pair_params;
 static uint16_t nb_port_pair_params;
 static uint16_t nb_port_pair_params;
 
-static unsigned int rx_queue_per_lcore = 2;
+static unsigned int rx_queue = 2;
 
 struct lcore_queue_conf {
   unsigned n_rx_port;
-  unsigned rx_port_list[MAX_RX_QUEUE_PER_LCORE];
+  unsigned rx_port_list[MAX_RX_QUEUE];
   unsigned id;
 } __rte_cache_aligned;
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
@@ -309,7 +310,7 @@ struct port_statistics {
   uint64_t rx;
   uint64_t dropped;
 } __rte_cache_aligned;
-struct port_statistics port_stats[RTE_MAX_ETHPORTS][MAX_RX_QUEUE_PER_LCORE];
+struct port_statistics port_stats[RTE_MAX_ETHPORTS][MAX_RX_QUEUE];
 
 /* A tsc-based timer responsible for triggering statistics printout */
 static uint64_t timer_period = 1; /* default period is 1 second */
@@ -400,12 +401,12 @@ struct hashmap active_sessions;
 
 static struct rte_mempool *
 create_extbuf_pool(const char *name, uint16_t nb_ports,
-                   uint16_t rx_queue_per_lcore, uint16_t nb_rxd,
+                   uint16_t rx_queue, uint16_t nb_rxd,
                    uint16_t nb_txd, uint16_t nb_lcores, int socket_id) {
   uint32_t nb_mbuf;
 
   nb_mbuf = RTE_MAX(
-      rx_queue_per_lcore * nb_ports *
+      rx_queue * nb_ports *
           (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE),
       8192U);
 
@@ -459,9 +460,9 @@ static void print_stats(void) {
   unsigned portid;
 
   /* Static variables to store previous statistics */
-  static uint64_t prev_tx[RTE_MAX_ETHPORTS][MAX_RX_QUEUE_PER_LCORE] = {0};
-  static uint64_t prev_rx[RTE_MAX_ETHPORTS][MAX_RX_QUEUE_PER_LCORE] = {0};
-  static uint64_t prev_dropped[RTE_MAX_ETHPORTS][MAX_RX_QUEUE_PER_LCORE] = {0};
+  static uint64_t prev_tx[RTE_MAX_ETHPORTS][MAX_RX_QUEUE] = {0};
+  static uint64_t prev_rx[RTE_MAX_ETHPORTS][MAX_RX_QUEUE] = {0};
+  static uint64_t prev_dropped[RTE_MAX_ETHPORTS][MAX_RX_QUEUE] = {0};
 
   const char clr[] = {27, '[', '2', 'J', '\0'};
   const char topLeft[] = {27, '[', '1', ';', '1', 'H', '\0'};
@@ -476,7 +477,7 @@ static void print_stats(void) {
     if ((enabled_port_mask & (1 << portid)) == 0)
       continue;
 
-    for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
+    for (uint32_t q = 0; q < rx_queue; q++) {
 
       uint64_t diff_tx = port_stats[portid][q].tx - prev_tx[portid][q];
       uint64_t diff_rx = port_stats[portid][q].rx - prev_rx[portid][q];
@@ -544,7 +545,7 @@ static void print_stats(void) {
   else
     printf("Without elastic ring\n");
 
-  if (rx_queue_per_lcore == 1) {
+  if (rx_queue == 1) {
     printf("Completion errors: %lu (diff:%'ld)\n", cmpl_error,
            cmpl_error - prev_cmpl_error);
     printf("Seq Completion errors: %lu (diff:%'ld)\n", cmpl_error_seq,
@@ -560,7 +561,7 @@ static void print_stats(void) {
   prev_cmpl_error_seq = cmpl_error_seq;
   prev_cmpl_error_dup = cmpl_error_dup;
   prev_debug_error = debug_error;
-  /*if (rx_queue_per_lcore>1)
+  /*if (rx_queue>1)
           for (int q=0; q<1; q++) {
                   printf("==========Q=%d=========\n",q);
                   print_c2h_ring_status((void*)dev->data->rx_queues[q],(void*)dev->data->tx_queues[q]);
@@ -1080,10 +1081,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       int max_loops = 100;
       for (i = 0; i < qconf->n_rx_port; i++) {
         portid = qconf->rx_port_list[i];
-        //for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
-        //for (int ii = 0; ii< nrxq; ii++){
-          {
-          uint32_t q = qconf->id;
+        //for (uint32_t q = 0; q < rx_queue; q++) {
+        for (int ii = 0; ii< rx_queue_per_core; ii++){
+          //{
+          uint32_t q = rx_queue_per_core*qconf->id+ii; 
 
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
@@ -1095,7 +1096,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             uint16_t pkid = m->timesync; // using timesync field to store packet
                                          // ID for simplicity: global (not per
                                          // queue) packet counter
-            if ((sw_pkt_id != pkid) && (rx_queue_per_lcore == 1)) {
+            if ((sw_pkt_id != pkid) && (rx_queue == 1)) {
               /*
               printf("----------------------------------------------------\n");
               printf("---               Completion error               ---\n");
@@ -1551,8 +1552,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
       /* nqueue */
       case 'q':
-        rx_queue_per_lcore = parse_n(optarg);
-        if (rx_queue_per_lcore == 0) {
+        rx_queue = parse_n(optarg);
+        if (rx_queue == 0) {
           printf("invalid queue number\n");
           usage(prgname);
           return -1;
@@ -1716,7 +1717,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
   static void signal_handler(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
       printf("\n\nSignal %d received, preparing to exit...\n", signum);
-      /*for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
+      /*for (uint32_t qid = 0; qid < rx_queue; qid++) {
           uint64_t r_addr;
           uint32_t r_tag;
           uint8_t r_valid;
@@ -1740,7 +1741,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             rte_wmb();
             val= qdma_reg_read(dev,0x1800C);
       printf("cidx: %d\n",val &0x0ffff);*/
-      for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
+      for (uint32_t q = 0; q < rx_queue; q++) {
 
         uint16_t cidx;
         if (!retransmit)
@@ -1862,7 +1863,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 		  nb_lcores++;
 	  }
 	  printf("Number of available lcores: %u\n", nb_lcores);
-
+    if (rx_queue % nb_lcores !=0) {
+      printf("num queue is not multiple of num lcores\n");
+    }
+    rx_queue_per_core=rx_queue/nb_lcores;
 
   /* Initialize the port/queue configuration of each logical core */
 	RTE_ETH_FOREACH_DEV(portid)
@@ -1891,7 +1895,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
       // get the lcore_id for this port //
       while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
-             lcore_queue_conf[rx_lcore_id].n_rx_port == rx_queue_per_lcore) {
+             lcore_queue_conf[rx_lcore_id].n_rx_port == rx_queue) {
         rx_lcore_id++;
         if (rx_lcore_id >= RTE_MAX_LCORE)
           rte_exit(EXIT_FAILURE, "Not enough cores\n");
@@ -1910,14 +1914,14 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     }*/
 
     nb_mbufs = RTE_MAX(
-        rx_queue_per_lcore * nb_ports *
+        rx_queue * nb_ports *
             (nb_rxd + nb_txd + MAX_PKT_BURST + nb_lcores * MEMPOOL_CACHE_SIZE),
         8192U);
     printf("Creating mbuf pool with %u mbufs\n", nb_mbufs);
 
     /* create the mbuf pool */
     if (bypass) {
-      for (uint32_t i = 0; i < rx_queue_per_lcore; i++) {
+      for (uint32_t i = 0; i < rx_queue; i++) {
         char pool_name[32];
         snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
         nb_mbufs = nb_ports * (nb_rxd + nb_txd + MAX_PKT_BURST +
@@ -1932,7 +1936,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                                nb_lcores, rte_socket_id());
       }
     } else {
-      for (uint32_t i = 0; i < rx_queue_per_lcore; i++) {
+      for (uint32_t i = 0; i < rx_queue; i++) {
         if (!lifo) {
           pktmbuf_pool[i] = rte_pktmbuf_pool_create(
               "mbuf_pool", nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
@@ -1998,8 +2002,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       // ETH_RSS_TCP | ETH_RSS_UDP;
 
       // modificare per mettere più code
-      ret = rte_eth_dev_configure(portid, rx_queue_per_lcore,
-                                  rx_queue_per_lcore, &local_port_conf);
+      ret = rte_eth_dev_configure(portid, rx_queue,
+                                  rx_queue, &local_port_conf);
       if (ret < 0)
         rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
                  ret, portid);
@@ -2017,7 +2021,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
       struct rte_eth_rss_reta_entry64 reta_conf[2048 / RTE_RETA_GROUP_SIZE];
       int i, j;
-      // crea l'indir table con valori da 0 a rx_queue_per_lcore
+      // crea l'indir table con valori da 0 a rx_queue
       for (i = 0; i < dev_info.reta_size / RTE_RETA_GROUP_SIZE; i++) {
         // select all fields to set //
         reta_conf[i].mask = ~0LL;
@@ -2032,8 +2036,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                  portid);
 
       rte_eth_dev_rss_reta_query(portid, reta_conf, dev_info.reta_size);
-      rx_queue_per_lcore = reta_conf[0].reta[0] + 1;
-      printf("rx_queue_per_lcore: %d\n", rx_queue_per_lcore);
+      rx_queue = reta_conf[0].reta[0] + 1;
+      printf("rx_queue: %d\n", rx_queue);
 
       rte_eth_dev_info_get(portid, &dev_info);
 
@@ -2062,7 +2066,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       rxq_conf = dev_info.default_rxconf;
       rxq_conf.offloads = local_port_conf.rxmode.offloads;
 
-      for (qid = 0; qid < rx_queue_per_lcore; qid++) {
+      for (qid = 0; qid < rx_queue; qid++) {
         diag = rte_pmd_qdma_set_queue_mode(portid, qid,
                                            RTE_PMD_QDMA_STREAMING_MODE);
         if (diag < 0)
@@ -2166,7 +2170,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       if (bypass) {
         qdma_reg_write_usr(dev, 0x5150, qmask); // qmask
         // qdma_reg_write_usr(dev,0x5154,0); //dsc_crdt_in_fence
-        for (qid = 0; qid < rx_queue_per_lcore; qid++) {
+        for (qid = 0; qid < rx_queue; qid++) {
           printf("---   Q=%d   ---\n", qid);
           print_phys(dev, qid);
           phys_addr = get_desc(dev, qid, 0);
@@ -2272,7 +2276,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     fclose(fp);*/
 
     if (bypass) {
-      for (uint32_t qid = 0; qid < rx_queue_per_lcore; qid++) {
+      for (uint32_t qid = 0; qid < rx_queue; qid++) {
         qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
       }
     }
