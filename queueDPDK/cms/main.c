@@ -243,6 +243,7 @@ bool toasty = false;
 bool shring = false;
 uint8_t freerunning = 0; /* cmpt overflow check mode: 0=disabled, 1=enabled */
 bool debug = false;
+bool debug_timestamp = false;
 bool elastic = false;
 bool retransmit = false;
 uint64_t phys_addr;
@@ -276,6 +277,7 @@ static unsigned int rx_queue_per_lcore = 2;
 struct lcore_queue_conf {
   unsigned n_rx_port;
   unsigned rx_port_list[MAX_RX_QUEUE_PER_LCORE];
+  unsigned id;
 } __rte_cache_aligned;
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
 
@@ -333,7 +335,7 @@ uint32_t sw_debug_id[2048] = {
 
 uint32_t prefetch_distance = 4; /* prefetch distance for mbufs in burst */
 uint32_t cms_columns = 1048576; /* number of columns in the count-min sketch */
-uint32_t num_hash = 40;
+uint32_t num_hash = 4;
 uint32_t num_rand = 0;
 /* Print out statistics on packets dropped */
 uint64_t measured_packets_rx = 0;
@@ -525,6 +527,10 @@ static void print_stats(void) {
     printf("With debug\n");
   else
     printf("Without debug\n");
+  if (debug_timestamp)
+    printf("With debug timestamp\n");
+  else
+    printf("Without debug timestamp\n");
   if (retransmit)
     printf("With retransmission\n");
   else
@@ -1074,7 +1080,11 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       int max_loops = 100;
       for (i = 0; i < qconf->n_rx_port; i++) {
         portid = qconf->rx_port_list[i];
-        for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
+        //for (uint32_t q = 0; q < rx_queue_per_lcore; q++) {
+        //for (int ii = 0; ii< nrxq; ii++){
+          {
+          uint32_t q = qconf->id;
+
           nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
           port_stats[portid][q].rx += nb_rx;
@@ -1438,6 +1448,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                                       "D"  /* dump pcap */
                                       "B"  /* enable bypass */
                                       "x"  /* enable debug */
+                                      "X"  /* enable debug timestamp */
                                       "T"  /* enable retransmit */
                                       "F"  /* enable freerunning */
                                       "E"  /* enable elastic buffer */
@@ -1561,6 +1572,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         break;
       case 'x':
         debug = true;
+        break;
+      case 'X':
+        debug_timestamp = true;
         break;
       case 'T':
         retransmit = true;
@@ -1761,6 +1775,12 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     argc -= ret;
     argv += ret;
 
+    /* initialize hashmaps for maglev load balancer */
+    hashmap_init(&services, sizeof(struct service_id), sizeof(struct service_info), MAX_SERVICES);
+    hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS);
+    hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES);
+    hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
+
     force_quit = false;
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -1836,13 +1856,40 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     rx_lcore_id = 0;
     qconf = NULL;
 
+    for (rx_lcore_id = 0; rx_lcore_id < RTE_MAX_LCORE; rx_lcore_id++) {
+		  if (rte_lcore_is_enabled(rx_lcore_id) == 0)
+			  continue;
+		  nb_lcores++;
+	  }
+	  printf("Number of available lcores: %u\n", nb_lcores);
+
+
+  /* Initialize the port/queue configuration of each logical core */
+	RTE_ETH_FOREACH_DEV(portid)
+	{
+		/* skip ports that are not enabled */
+		if ((enabled_port_mask & (1 << portid)) == 0)
+			continue;
+    int count_core=0;
+		for (rx_lcore_id = 0; rx_lcore_id < RTE_MAX_LCORE; rx_lcore_id++) {
+			if (rte_lcore_is_enabled(rx_lcore_id) == 0)
+				continue;
+			qconf = &lcore_queue_conf[rx_lcore_id];
+			qconf->id=count_core++;
+      qconf->n_rx_port++;
+			qconf->rx_port_list[qconf->n_rx_port] = portid;
+			printf("Lcore %u: RX port %u TX port %u\n", rx_lcore_id, portid, portid);
+		}
+
+	}
+
     /* Initialize the port/queue configuration of each logical core */
-    RTE_ETH_FOREACH_DEV(portid) {
-      /* skip ports that are not enabled */
+    /*RTE_ETH_FOREACH_DEV(portid) {
+      // skip ports that are not enabled //
       if ((enabled_port_mask & (1 << portid)) == 0)
         continue;
 
-      /* get the lcore_id for this port */
+      // get the lcore_id for this port //
       while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
              lcore_queue_conf[rx_lcore_id].n_rx_port == rx_queue_per_lcore) {
         rx_lcore_id++;
@@ -1851,7 +1898,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       }
 
       if (qconf != &lcore_queue_conf[rx_lcore_id]) {
-        /* Assigned a new logical core in the loop above. */
+        // Assigned a new logical core in the loop above. //
         qconf = &lcore_queue_conf[rx_lcore_id];
         nb_lcores++;
       }
@@ -1860,7 +1907,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       qconf->n_rx_port++;
       printf("Lcore %u: RX port %u TX port %u\n", rx_lcore_id, portid,
              dst_ports[portid]);
-    }
+    }*/
 
     nb_mbufs = RTE_MAX(
         rx_queue_per_lcore * nb_ports *
@@ -2112,7 +2159,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                  portid);
 
       printf("done: \n");
-      if (debug)
+      if (debug || debug_timestamp)
         qdma_write_bypass_reg_debug(dev, 1);
       else
         qdma_write_bypass_reg_debug(dev, 0);
@@ -2132,16 +2179,16 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           qdma_write_queue_bypass_registers(
               dev, qid, phys_addr, prefetch_tag[qid & qmask], 1, nb_rxd);
         }
-        if (freerunning && debug)
+        if (freerunning && (debug|| debug_timestamp))
           qdma_write_bypass_reg_debug(dev, 3);
 
-        if (freerunning && !debug)
+        if (freerunning && !debug && !debug_timestamp)
           qdma_write_bypass_reg_debug(dev, 2);
 
-        if (elastic && !debug)
+        if (elastic && !debug && !debug_timestamp)
           qdma_write_bypass_reg_debug(dev, 4);
 
-        if (elastic && debug)
+        if (elastic && (debug || debug_timestamp))
           qdma_write_bypass_reg_debug(dev, 5);
 
         // reset counters
@@ -2257,3 +2304,4 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
   }
 
   
+
