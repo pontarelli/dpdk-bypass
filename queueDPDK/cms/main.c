@@ -838,7 +838,7 @@ static void inline process_mica(struct rte_mbuf *m) {
   if (table == NULL) {
     const size_t umem_size = 512;
     const size_t page_size = 1048576 * 2;
-    const size_t num_numa_nodes = 8;
+    const size_t num_numa_nodes = 1;
     const size_t num_pages_to_try = umem_size;
     const size_t num_pages_to_reserve = umem_size - umem_size / 8;
     size_t alloc_overhead = sizeof(struct mehcached_item);
@@ -856,7 +856,7 @@ static void inline process_mica(struct rte_mbuf *m) {
         (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) /
             MEHCACHED_ITEMS_PER_BUCKET,
         1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
-        false, false, 2, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+        false, false, 0, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
     assert(table);
 
     char default_value[VALUE_SIZE];
