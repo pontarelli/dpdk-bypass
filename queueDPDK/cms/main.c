@@ -718,8 +718,8 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
 
   /* Look for known sessions */
   struct replace_info *rep = hashmap_lookup_elem(&active_sessions, &sid);
+  // Replace the destination IP and port with the backend's IP and port
   if (rep) {
-    // Replace the destination IP and port with the backend's IP and port
     if (rep->dir == DIR_TO_BACKEND) {
       ip->daddr = rep->addr;
       udp->dest = rep->port;
@@ -729,17 +729,25 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
       udp->source = rep->port;
       memcpy(eth->s_addr.addr_bytes, rep->mac_addr, sizeof(eth->s_addr));
     }
+    //printf("Existing session found, applying stored mapping\n");
     return;
   }
 
   /* New session, apply load balancing logic */
   struct service_id srvid = {
       .vaddr = sid.daddr, .vport = sid.dport, .proto = ip->protocol};
+  // Print key information for debugging
+  char src_ip_str[INET_ADDRSTRLEN];
+  char dst_ip_str[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &sid.saddr, src_ip_str, INET_ADDRSTRLEN);
+  inet_ntop(AF_INET, &sid.daddr, dst_ip_str, INET_ADDRSTRLEN);
+  //printf("New session: %s:%d -> %s:%d (proto: %d)\n", src_ip_str, ntohs(sid.sport), dst_ip_str, ntohs(sid.dport), sid.proto);
   struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
   if (!srvinfo) {
-    printf("ERROR: missing service --> DROPPING\n");
+    //printf("ERROR: missing service --> DROPPING\n");
     return;
   }
+  //printf("Service found\n");
 
   struct backend_id bkdid = {
       .service = srvid,
@@ -748,8 +756,9 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
               ->bkd_mapping[murmurhash(&sid, sizeof(struct session_id), 0) %
                             MAGLEV_LOOKUP_SIZE]};
   struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
+
   if (!bkdinfo) {
-    printf("ERROR: missing backend --> DROPPING\n");
+    //printf("ERROR: missing backend --> DROPPING\n");
     return;
   }
 
@@ -1776,11 +1785,6 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     argc -= ret;
     argv += ret;
 
-    /* initialize hashmaps for maglev load balancer */
-    hashmap_init(&services, sizeof(struct service_id), sizeof(struct service_info), MAX_SERVICES);
-    hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS);
-    hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES);
-    hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
 
     force_quit = false;
     signal(SIGINT, signal_handler);
@@ -1794,6 +1798,44 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS);
     hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES);
     hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
+
+    /* Populate services hashmap with a dummy entry */
+    struct service_id dummy_service_id = {0};
+    struct service_info dummy_service_info = {0};
+    dummy_service_id.proto = 0; // UDP
+    dummy_service_id.vaddr = inet_addr("10.129.2.121");
+    dummy_service_id.vport = htons(80);
+    dummy_service_info.backends = 1;
+    hashmap_insert_elem(&services, &dummy_service_id, &dummy_service_info);
+    // populate maglev table for the dummy service with a dummy backend
+    struct maglev dummy_maglev = {0};
+    for (int i = 0; i < MAGLEV_LOOKUP_SIZE; i++) {
+      dummy_maglev.bkd_mapping[i] = 0; // point to the only backend
+    }
+    hashmap_insert_elem(&maglev_tables, &dummy_service_id, &dummy_maglev);
+    // populate backends hashmap with a dummy entry
+    struct backend_id dummy_bkd_id = {0};
+    struct backend_info dummy_bkd_info = {0};
+    dummy_bkd_id.service = dummy_service_id;
+    dummy_bkd_id.index = 0;
+    dummy_bkd_info.addr = inet_addr("10.129.2.121");
+    dummy_bkd_info.port = htons(80);
+    dummy_bkd_info.mac_addr[0] = 0x02;
+    dummy_bkd_info.mac_addr[1] = 0x00;
+    dummy_bkd_info.mac_addr[2] = 0x00;
+    dummy_bkd_info.mac_addr[3] = 0x00;
+    dummy_bkd_info.mac_addr[4] = 0x00;
+    dummy_bkd_info.mac_addr[5] = 0x01; // MAC: 02:00:00:00:00:01
+    dummy_bkd_info.port = 0; // assume backend is reachable via port 0
+    hashmap_insert_elem(&backends, &dummy_bkd_id, &dummy_bkd_info);
+
+  //struct backend_id bkdid = {
+  //    .service = dummy_service_id,
+  //    .index =
+  //        ((struct maglev *)hashmap_lookup_elem(&maglev_tables, &dummy_service_id))
+  //            ->bkd_mapping[murmurhash(&sid, sizeof(struct session_id), 0) %
+  //                          MAGLEV_LOOKUP_SIZE]};
+  //struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
 
     /* parse application arguments (after the EAL ones) */
     ret = parse_args(argc, argv);
