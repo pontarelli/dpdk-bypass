@@ -233,8 +233,6 @@ struct rte_eth_stats stats;
 uint32_t qmask = 0x7;
 uint32_t prefetch_tag[2048];
 
-uint16_t port_id = 0;
-
 struct countmin *cm;
 static volatile bool force_quit;
 bool silent = false;
@@ -242,6 +240,7 @@ bool dump = false;
 bool bypass = false;
 bool lifo = false;
 bool toasty = false;
+bool shring = false;
 uint8_t freerunning = 0; /* cmpt overflow check mode: 0=disabled, 1=enabled */
 bool debug = false;
 bool elastic = false;
@@ -610,8 +609,8 @@ static void print_stats(void) {
   total_packets_rx_prev = total_packets_rx;
   total_packets_dropped_prev = total_packets_dropped;
 
-  if (rte_eth_stats_get(port_id, &stats) < 0) {
-    printf("Error getting stats for port %u\n", port_id);
+  if (rte_eth_stats_get(0, &stats) < 0) {
+    printf("Error getting stats for port %u\n", 0);
   }
   fflush(stdout);
 }
@@ -1439,6 +1438,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                                       "a:" /* application */
                                       "L"  /* enable LIFO */
                                       "t"  /* enable toasty logic */
+                                      "s"  /* enable shRing logic */
       ;
 
   enum {
@@ -1562,7 +1562,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         freerunning = 1;
         break;
       case 't':
-        toasty = 1;
+        toasty = true;
+        break;
+      case 's':
+        shring = true;
         break;
       /* long options */
       case CMD_LINE_OPT_PORTMAP_NUM:
@@ -1920,7 +1923,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                  "Error during getting device (port %u) info: %s\n", portid,
                  strerror(-ret));
 
-      struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+      struct rte_eth_dev *dev = &rte_eth_devices[portid];
 
       // qdma_reg_write_usr(dev,0x000C,1); //QDMA reset
       // qdma_reg_write_usr(dev,0x000C,2); //CMAC0 reset
@@ -2019,6 +2022,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         if (toasty) {
           rte_pmd_qdma_enable_toasty_logic(portid, qid);
         }
+        if (shring) {
+          rte_pmd_qdma_enable_shring_logic(portid, qid);
+        }
         if (bypass) {
           ret = rte_eth_rx_queue_setup(portid, qid, nb_rxd,
                                        rte_eth_dev_socket_id(portid), &rxq_conf,
@@ -2031,8 +2037,11 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         if (ret < 0)
           rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n",
                    ret, portid);
-
-        ret = rte_pmd_qdma_set_cmpt_overflow_check(port_id, qid, !freerunning);
+        if (shring) {
+          rte_pmd_qdma_set_shring(portid, qid, 0);
+        }
+            
+        ret = rte_pmd_qdma_set_cmpt_overflow_check(portid, qid, !freerunning);
         if (ret < 0)
           rte_exit(EXIT_FAILURE,
                    "rte_pmd_qdma_set_cmpt_overflow_check:err=%d, port=%u\n",
@@ -2046,7 +2055,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           prefetch_tag[qid] &= 0x7f;
           printf("Prefetch tag for qid=%d: %u\n", qid, prefetch_tag[qid]);
         }
-        /* init one TX queuefor eacxh RX queue */
+        /* init one TX queue for eacxh RX queue */
         fflush(stdout);
         txq_conf = dev_info.default_txconf;
         txq_conf.offloads = local_port_conf.txmode.offloads;
@@ -2230,3 +2239,5 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
     return ret;
   }
+
+  
