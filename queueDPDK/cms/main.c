@@ -1758,6 +1758,12 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
     rte_srand((unsigned)time(NULL));
 
+    /* initialize hashmaps for maglev load balancer */
+    hashmap_init(&services, sizeof(struct service_id), sizeof(struct service_info), MAX_SERVICES);
+    hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS);
+    hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES);
+    hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
+
     /* parse application arguments (after the EAL ones) */
     ret = parse_args(argc, argv);
     if (ret < 0)
