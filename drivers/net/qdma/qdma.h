@@ -213,6 +213,9 @@ struct qdma_rx_queue {
 	uint8_t			en_bypass_prefetch:1;
 	uint8_t			dis_overflow_check:1;
 	uint8_t 	 	toasty_enabled:1; /* Enable toasty logic for adaptive buffer allocation */
+	uint8_t 	 	shring_enabled:1; /* Enable shRing logic */
+	struct qdma_rx_queue		*shring_rxq; /* Pointer to the shRing partner RX queue, if shRing logic is enabled */
+	uint64_t		* shring_bitmap; /* Bitmap to track the descriptor status of the shRing */
 
 	union qdma_ul_st_cmpt_ring cmpt_data[QDMA_MAX_BURST_SIZE];
 
@@ -293,6 +296,7 @@ struct queue_info {
 	uint8_t		dis_cmpt_ovf_chk:1;
 	uint8_t		en_prefetch:1;
 	uint8_t 	en_toasty_logic:1;
+	uint8_t 	en_shring_logic:1;
 	enum rte_pmd_qdma_bypass_desc_len rx_bypass_desc_sz:7;
 	enum rte_pmd_qdma_bypass_desc_len tx_bypass_desc_sz:7;
 	uint8_t		timer_count;
