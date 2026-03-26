@@ -6304,6 +6304,17 @@ int qdma_write_queue_bypass_tag(void *dev_hndl, uint16_t qid, uint32_t tag, uint
 	return QDMA_SUCCESS;
 }
 
+int qdma_write_direct_queue_bypass_tag(void *dev_hndl, uint16_t qid, uint32_t tag, uint8_t valid) {
+
+	// Write tag and valid
+	qdma_reg_write_usr(dev_hndl,
+		qid*16+QDMA_BYPASS_REG_TABLE + 12,
+		valid ? (tag | (0x1 << 7)) : (tag & ~(0x1 << 7)));
+
+	return QDMA_SUCCESS;
+}
+
+
 int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc) {
 
 	// Use the qid as the page index 
@@ -6329,6 +6340,28 @@ int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t add
 
 	return QDMA_SUCCESS;
 }
+
+int qdma_write_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc) {
+
+	// Write the address
+	qdma_reg_write_usr(dev_hndl,
+		qid*16+QDMA_BYPASS_REG_TABLE,
+		(uint32_t)(addr & 0xFFFFFFFF));
+	qdma_reg_write_usr(dev_hndl,
+		qid*16+QDMA_BYPASS_REG_TABLE + 4,
+		(uint32_t)((addr >> 32) & 0xFFFFFFFF));
+	// Write num desc
+	qdma_reg_write_usr(dev_hndl,
+		qid*16+QDMA_BYPASS_REG_TABLE + 8,
+		num_desc);
+	// Write tag and valid
+	qdma_reg_write_usr(dev_hndl,
+		qid*16+QDMA_BYPASS_REG_TABLE + 12,
+		valid ? (tag | (0x1 << 7)) : (tag & ~(0x1 << 7)));
+
+	return QDMA_SUCCESS;
+}
+
 
 int qdma_read_bypass_reg_addr(void *dev_hndl, uint64_t *addr) {
 	uint32_t addr_lo, addr_hi;
@@ -6623,6 +6656,36 @@ int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *add
 	if (tag || valid) {
 		uint32_t tag_valid = qdma_reg_read_usr(dev_hndl,
 			QDMA_BYPASS_REG_TABLE + 12);
+		if (tag)
+			*tag = tag_valid & 0x7F; // bits [6:0] is tag
+		if (valid)
+			*valid = (tag_valid >> 7) & 0x1; // bit 7 is valid
+	}
+
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *addr, uint32_t *tag, uint8_t *valid, uint32_t *num_desc) {
+	
+	// Read the address
+	if (addr) {
+		uint32_t addr_lo = qdma_reg_read_usr(dev_hndl,
+			qid*16+QDMA_BYPASS_REG_TABLE);
+		uint32_t addr_hi = qdma_reg_read_usr(dev_hndl,
+			qid*16+QDMA_BYPASS_REG_TABLE + 4);
+		*addr = ((uint64_t)addr_hi << 32) | (uint64_t)addr_lo;
+	}
+
+	// Read num desc
+	if (num_desc) {
+		*num_desc = qdma_reg_read_usr(dev_hndl,
+			qid*16+QDMA_BYPASS_REG_TABLE + 8);
+	}
+
+	// Read tag and valid
+	if (tag || valid) {
+		uint32_t tag_valid = qdma_reg_read_usr(dev_hndl,
+			qid*16+QDMA_BYPASS_REG_TABLE + 12);
 		if (tag)
 			*tag = tag_valid & 0x7F; // bits [6:0] is tag
 		if (valid)

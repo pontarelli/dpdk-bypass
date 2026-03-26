@@ -82,12 +82,18 @@ uint16_t get_cidx_tx(void *tx_queue, bool elastic);
 
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
                                      uint32_t *tag);
+
 int qdma_write_queue_bypass_registers(void *dev_hndl, uint16_t qid,
                                       uint64_t addr, uint32_t tag,
                                       uint8_t valid, uint32_t num_desc);
 int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid,
                                      uint64_t *addr, uint32_t *tag,
                                      uint8_t *valid, uint32_t *num_desc);
+
+int qdma_read_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *addr, uint32_t *tag, uint8_t *valid, uint32_t *num_desc);
+int qdma_write_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag,  uint8_t valid, uint32_t num_desc);
+
+
 int qdma_bypass_clear_counters(void *dev_hndl);
 int qdma_write_bypass_reg_debug(void *dev_hndl, uint8_t debug);
 uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst);
@@ -204,6 +210,15 @@ static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
   uint32_t val = (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
   qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE + 12, val);
 }
+
+/* update cidx */
+static void update_direct_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
+
+  // Write  cidx, valid, tag
+  uint32_t val = (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
+  qdma_reg_write_usr(dev, qid*16+QDMA_BYPASS_REG_TABLE + 12, val);
+}
+
 
 /* Read pidx */
 static uint32_t get_bypass_pidx(void *dev, uint16_t qid) {
@@ -574,7 +589,7 @@ static void print_stats(void) {
 
   printf("\n====================================================\n");
 
-  for (int q = 0; q < 2; q++) {
+  /*for (int q = 0; q < 2; q++) {
     uint32_t counter = get_bypass_pidx(dev, q) & 0x0ffff;
     uint32_t pidx = get_bypass_pidx(dev, q) % 1024;
     uint32_t cidx = get_bypass_cidx(dev, q);
@@ -587,7 +602,7 @@ static void print_stats(void) {
     else
       printf("  LEVEL: %d", level);
     printf("\n");
-  }
+  }*/
 
   printf("\n====================================================\n");
 
@@ -838,7 +853,7 @@ static void inline process_mica(struct rte_mbuf *m) {
   if (table == NULL) {
     const size_t umem_size = 512;
     const size_t page_size = 1048576 * 2;
-    const size_t num_numa_nodes = 8;
+    const size_t num_numa_nodes = 1;
     const size_t num_pages_to_try = umem_size;
     const size_t num_pages_to_reserve = umem_size - umem_size / 8;
     size_t alloc_overhead = sizeof(struct mehcached_item);
@@ -1322,7 +1337,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             else
               cidx = get_cidx_tx(dev->data->tx_queues[q],
                                  elastic); // read updated cidx from TX queue
-            update_cidx(
+            update_direct_cidx(
                 dev, q, cidx,
                 prefetch_tag[q & qmask]); // update cidx to rearm the ring
           }
@@ -1758,7 +1773,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         else
           cidx = get_cidx_tx(dev->data->tx_queues[q],
                              elastic); // read updated cidx from TX queue
-        update_cidx(dev, q, cidx,
+        update_direct_cidx(dev, q, cidx,
                     prefetch_tag[q]); // update cidx to rearm the ring
       }
       printf("SIGQUIT received\n");
@@ -2222,7 +2237,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             q1_phys_addr_start = phys_addr;
 
           printf("Phys addr %08lx\n", phys_addr);
-          qdma_write_queue_bypass_registers(
+          qdma_write_direct_queue_bypass_registers(
               dev, qid, phys_addr, prefetch_tag[qid & qmask], 1, nb_rxd);
         }
         if (freerunning && (debug|| debug_timestamp))
@@ -2319,7 +2334,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
     if (bypass) {
       for (uint32_t qid = 0; qid < rx_queue; qid++) {
-        qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+        qdma_write_direct_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
       }
     }
 
