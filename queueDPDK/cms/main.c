@@ -704,10 +704,16 @@ static void l2_forward(struct rte_mbuf *m, unsigned portid) {
 static void inline process_packet_maglev(struct rte_mbuf *m) {
 
   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+  // Check if this is a IP packet
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+    //printf("Not an IPv4 packet %x \n", eth->ether_type);
+      return;
+  }
+
+  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
   struct udphdr *udp =
-      (struct udphdr *)(eth + sizeof(struct rte_ether_hdr *) + ip_header_len);
+      (struct udphdr *)(eth + sizeof(struct rte_ether_hdr) + ip_header_len);
 
   struct session_id sid = {0};
   sid.saddr = ip->saddr;
@@ -797,7 +803,12 @@ uint16_t nat_port = 12345;
 static void inline process_nat(struct rte_mbuf *m) {
   // parse headers
   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+  // Check if this is a IP packet
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+    //printf("Not an IPv4 packet %x \n", eth->ether_type);
+      return;
+  }
+  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
   struct rte_udp_hdr *udp =
       (struct rte_udp_hdr *)(eth + sizeof(struct rte_ether_hdr *) +
@@ -821,15 +832,40 @@ static void inline process_ids(struct rte_mbuf *m) {
 static void inline process_decryption(struct rte_mbuf *m) {
 
   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr *));
+  
+  // Check if this is a IP packet
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+    //printf("Not an IPv4 packet %x \n", eth->ether_type);
+      return;
+  }
+  //struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr*) (eth+1);
+  struct iphdr *ip =
+      (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
+  
+  //printf("Decryption: ip_header_len=%d\n", ip_header_len);
+  
+  // Check if this is a UDP packet
+  /*printf("----------------------------------------------------\n");
+  for (size_t i = 0; i < 64; i++) {
+    printf("%02X ", (unsigned char) *((char *)eth + i));
+  }
+  printf("\n");
+  printf("----------------------------------------------------\n");
+  */
+  
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4) ||
+    ip->protocol != IPPROTO_UDP) {
+    //printf("Not a UDP packet %x %x \n", ip->next_proto_id, IPPROTO_UDP);
+      return;
+    }
+  
   struct rte_udp_hdr *udp =
-      (struct rte_udp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr *) +
+      (struct rte_udp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr) +
                              ip_header_len);
   unsigned char *payload = (unsigned char *)(udp + 1);
-  int udp_length = ntohs(udp->dgram_len);
+  int udp_length = rte_cpu_to_be_16(udp->dgram_len);
   int payload_len = udp_length - sizeof(struct rte_udp_hdr);
-
   for (int i = 0; i < payload_len; i++)
     payload[i] = payload[i] + decryption_key;
 }
@@ -875,6 +911,10 @@ static void inline process_mica(struct rte_mbuf *m) {
     }
   }
   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+    //printf("Not an IPv4 packet %x \n", eth->ether_type);
+      return;
+  }
   struct iphdr *ip =
       (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
