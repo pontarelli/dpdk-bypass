@@ -6706,3 +6706,13 @@ int qdma_bypass_clear_counters(void *dev_hndl) {
 
 }
 
+int qdma_bypass_direct_clear_counters(void *dev_hndl) {
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_DIRECT_CLEAR_COUNTERS,
+		1);
+	sleep(1);
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_DIRECT_CLEAR_COUNTERS,
+		0);
+
+}

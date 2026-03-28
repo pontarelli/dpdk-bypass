@@ -95,6 +95,7 @@ int qdma_write_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint6
 
 
 int qdma_bypass_clear_counters(void *dev_hndl);
+int qdma_bypass_direct_clear_counters(void *dev_hndl);
 int qdma_write_bypass_reg_debug(void *dev_hndl, uint8_t debug);
 uint32_t qdma_reg_read(void *dev_hndl, uint32_t reg_offst);
 uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst);
@@ -2296,6 +2297,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           qdma_write_bypass_reg_debug(dev, 5);
 
         // reset counters
+        //qdma_bypass_direct_clear_counters(dev);
         qdma_bypass_clear_counters(dev);
       }
 
@@ -2410,3 +2412,5 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
   
 
+
+  
