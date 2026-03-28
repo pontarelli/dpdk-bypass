@@ -1377,7 +1377,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             else
               cidx = get_cidx_tx(dev->data->tx_queues[q],
                                  elastic); // read updated cidx from TX queue
-            update_direct_cidx(
+            //update_direct_cidx(
+            update_cidx(
                 dev, q, cidx,
                 prefetch_tag[q & qmask]); // update cidx to rearm the ring
           }
@@ -1813,7 +1814,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         else
           cidx = get_cidx_tx(dev->data->tx_queues[q],
                              elastic); // read updated cidx from TX queue
-        update_direct_cidx(dev, q, cidx,
+        //update_direct_cidx(dev, q, cidx,
+        update_cidx(dev, q, cidx,
                     prefetch_tag[q]); // update cidx to rearm the ring
       }
       printf("SIGQUIT received\n");
@@ -2277,7 +2279,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             q1_phys_addr_start = phys_addr;
 
           printf("Phys addr %08lx\n", phys_addr);
-          qdma_write_direct_queue_bypass_registers(
+          //qdma_write_direct_queue_bypass_registers(
+          qdma_write_queue_bypass_registers(
               dev, qid, phys_addr, prefetch_tag[qid & qmask], 1, nb_rxd);
         }
         if (freerunning && (debug|| debug_timestamp))
@@ -2374,7 +2377,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
     if (bypass) {
       for (uint32_t qid = 0; qid < rx_queue; qid++) {
-        qdma_write_direct_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+        //qdma_write_direct_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+        qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
       }
     }
 
