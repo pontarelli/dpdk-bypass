@@ -200,10 +200,17 @@ static void pcap_file_close(void) {
   }
 }
 
+uint16_t prev_qid=0;
+rte_spinlock_t lock = RTE_SPINLOCK_INITIALIZER;
 /* update cidx */
 static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
 
   // Use the qid as the page index
+  if (prev_qid != qid) {
+    qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+                       (uint32_t)(qid & 0x0FFFF));
+    prev_qid = qid;
+  }
   qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
                      (uint32_t)(qid & 0x0FFFF));
 
@@ -1378,10 +1385,13 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             else
               cidx = get_cidx_tx(dev->data->tx_queues[q],
                                  elastic); // read updated cidx from TX queue
-            //update_direct_cidx(
-            update_cidx(
-                dev, q, cidx,
-                prefetch_tag[q & qmask]); // update cidx to rearm the ring
+            ///if (rte_spinlock_trylock(&lock)) {
+              //update_direct_cidx(
+              update_cidx(
+                  dev, q, cidx,
+                  prefetch_tag[q & qmask]); // update cidx to rearm the ring
+              //rte_spinlock_unlock(&lock);
+            //}
           }
 
           if (nb_rx < MAX_PKT_BURST) {
