@@ -1235,8 +1235,6 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
     #define HALF_LINK_THRESHOLD 64
     if (rxq->toasty_enabled) {
       //TODO: 
-      // - I'm getting the wrong CIDX (probably the completion one) since it's going over 1024 -> TRUE, in ST mode no RX CIDX is written by the NIC
-      // - total_rx_packets is always 0, probably because of the wrong CIDX, but also because of the way we calculate it -> TRUE, point above
       //   The two cidxs are correct when printed but the difference is sometimes 0 when it shouldn't -> synch issue? dma_synch stuff?
       //   IDEA: use the completion pidx -> should be a proxy for the #pkts DMAed by the NIC 
       // - total_rx_packets and other vars (result of difference between indices) must be wrapped DONE
@@ -1256,9 +1254,22 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
         total_rx_packets_back =
             rxq->nb_rx_cmpt_desc - 1 - rxq->prev_cmpt_pidx + cmpt_pidx;
       // insert read memory barrier here to make sure we have the latest value of cidx and pidx, and consequently of total_rx_packets_back
-      rte_rmb();
       //uint32_t total_rx_packets = total_rx_packets_count;
       uint32_t total_rx_packets = total_rx_packets_back;
+      // Number of entries in the RX ring that are available for allocation,
+      // this is the N_{avail} in toasty paper
+      //uint32_t entries_to_alloc = pending_desc; // number of entries allocatable in the RX ring, this is
+      uint32_t entries_to_alloc;
+      // TODO: from the Completiion Ring pidx difference, compute the number of RX buffer consumed by the NIC
+      // Increase the RX ring cidx using this number, then compute entries_to_alloc doing RX ring pidx - cidx, this should be the real number of entries available in the RX ring, and consequently the real N_{avail}
+      uint16_t* cidx = &rxq->rx_ring_cidx;
+      *cidx += total_rx_packets_back; // update the cidx by adding the number of packets received since last rearm
+      if (*cidx >= (rxq->nb_rx_desc - 1)) // wrap around
+        *cidx -= (rxq->nb_rx_desc - 1);
+      entries_to_alloc = rxq->q_pidx_info.pidx - *cidx - 1; // compute the number of entries available for the NIC to DMA in the RX ring
+      rte_rmb();
+
+
       mfprintf(stderr, "@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
       mfprintf(stderr, "count_pkts: %u\n", count_pkts);
       mfprintf(stderr, "cmpt pidx: %u\n", cmpt_pidx);
@@ -1268,13 +1279,9 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       mfprintf(stderr, "nb_pkts_avail: %u\n", nb_pkts_avail);
       //mfprintf(stderr, "total_rx_packets_back: %u\n", total_rx_packets_back);
       mfprintf(stderr, "pidx: %u\n", rxq->q_pidx_info.pidx);
-      // Number of entries in the RX ring that are available for allocation,
-      // this is the N_{avail} in toasty paper
-      uint32_t entries_to_alloc =
-          pending_desc; // number of entries allocatable in the RX ring, this is
                         // the N_{avail} in toasty paper
       // buffers which are not allocated
-      mfprintf(stderr, "entries_to_alloc: %u\n", pending_desc);
+      mfprintf(stderr, "entries_to_alloc: %u\n", entries_to_alloc);
       uint32_t used_buff = rxq->nb_rx_desc - 1 - entries_to_alloc; // -N_{avail}
       mfprintf(stderr, "nb_rx_desc: %u\n", rxq->nb_rx_desc);
       mfprintf(stderr, "used_buff: %u\n", used_buff);
@@ -1350,7 +1357,6 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
         }
       }
 
-      rxq->previous_rxring_cidx = wb_status->cidx;
       rxq->prev_cmpt_pidx = cmpt_pidx;
       mfprintf(stderr, "to_alloc: %d\n", to_alloc);
       /* Perform the allocation */

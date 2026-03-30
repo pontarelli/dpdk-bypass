@@ -195,7 +195,7 @@ struct qdma_rx_queue {
 	uint32_t		queue_id; /**< RX queue index. */
 	uint64_t		mbuf_initializer; /**< value to init mbufs */
 
-	uint16_t 		previous_rxring_cidx; /* used for tracking the previous cidx of rx ring for adaptive buffer allocation */
+	uint16_t 		rx_ring_cidx;
 	uint16_t		prev_c2h_pidx; /* used for tracking the previous pidx of c2h ring for adaptive buffer allocation */
 	uint16_t		prev_cmpt_pidx;
 	struct qdma_q_pidx_reg_info	q_pidx_info;
