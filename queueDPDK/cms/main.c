@@ -868,7 +868,7 @@ static void inline process_decryption(struct rte_mbuf *m) {
   
   //printf("Decryption: ip_header_len=%d\n", ip_header_len);
   
-  // Check if this is a UDP packet
+  // Check if this is a TCP packet
   /*printf("----------------------------------------------------\n");
   for (size_t i = 0; i < 64; i++) {
     printf("%02X ", (unsigned char) *((char *)eth + i));
@@ -878,17 +878,18 @@ static void inline process_decryption(struct rte_mbuf *m) {
   */
   
   if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4) ||
-    ip->protocol != IPPROTO_UDP) {
-    //printf("Not a UDP packet %x %x \n", ip->next_proto_id, IPPROTO_UDP);
+    ip->protocol != IPPROTO_TCP) {
+    //printf("Not a TCP packet %x %x \n", ip->protocol, IPPROTO_TCP);
       return;
     }
   
-  struct rte_udp_hdr *udp =
-      (struct rte_udp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr) +
+  struct rte_tcp_hdr *tcp =
+      (struct rte_tcp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr) +
                              ip_header_len);
-  unsigned char *payload = (unsigned char *)(udp + 1);
-  int udp_length = rte_cpu_to_be_16(udp->dgram_len);
-  int payload_len = udp_length - sizeof(struct rte_udp_hdr);
+  unsigned char *payload = (unsigned char *)(tcp + 1);
+  int ip_total_len = rte_cpu_to_be_16(ip->tot_len);
+  int tcp_header_len = (tcp->data_off >> 4) * 4;
+  int payload_len = ip_total_len - ip_header_len - tcp_header_len;
   for (int i = 0; i < payload_len; i++)
     payload[i] = payload[i] + decryption_key;
 }
@@ -941,18 +942,15 @@ static void inline process_mica(struct rte_mbuf *m) {
   struct iphdr *ip =
       (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
-  struct rte_udp_hdr *udp =
-      (struct rte_udp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr) +
+  struct rte_tcp_hdr *tcp=
+      (struct rte_tcp_hdr *)(((uint8_t *)eth) + sizeof(struct rte_ether_hdr) +
                              ip_header_len);
-  unsigned char *payload = (unsigned char *)(udp + 1);
-  int udp_length = ntohs(udp->dgram_len);
-  int payload_len = udp_length - sizeof(struct rte_udp_hdr);
 
   size_t key;
   char value[VALUE_SIZE];
 
   // get key
-  memcpy(&key, payload, sizeof(size_t));
+  memcpy(&key, tcp, sizeof(size_t));
   flag = !flag;
   key = default_keys[keys_index];
   keys_index = (keys_index + 1) % NUM_KEYS;
@@ -967,12 +965,12 @@ static void inline process_mica(struct rte_mbuf *m) {
       assert(value_length == sizeof(value));
 
     // send value
-    memcpy(payload + sizeof(size_t), &value, VALUE_SIZE);
+    memcpy((unsigned char *)(tcp + 1) + sizeof(size_t), &value, VALUE_SIZE);
   }
 
   // STORE
   else {
-    memcpy(value, payload + sizeof(size_t), VALUE_SIZE);
+    memcpy(value, (unsigned char *)(tcp + 1) + sizeof(size_t), VALUE_SIZE);
     value[VALUE_SIZE - 1] = '\0';
     uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
     if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
@@ -980,7 +978,7 @@ static void inline process_mica(struct rte_mbuf *m) {
       assert(false);
 
     // send acknowledgement
-    memcpy(payload + sizeof(size_t), &value, VALUE_SIZE);
+    memcpy((unsigned char *)(tcp + 1) + sizeof(size_t), &value, VALUE_SIZE);
   }
 }
 
@@ -1385,12 +1383,12 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             else
               cidx = get_cidx_tx(dev->data->tx_queues[q],
                                  elastic); // read updated cidx from TX queue
-            ///if (rte_spinlock_trylock(&lock)) {
+            //if (rte_spinlock_trylock(&lock)) {
               //update_direct_cidx(
               update_cidx(
                   dev, q, cidx,
                   prefetch_tag[q & qmask]); // update cidx to rearm the ring
-              //rte_spinlock_unlock(&lock);
+            //  rte_spinlock_unlock(&lock);
             //}
           }
 

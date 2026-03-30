@@ -141,7 +141,7 @@ struct __attribute__ ((packed)) wb_status
 			volatile uint32_t	tx_pidx; /** Reserved. **/
 		};
 	};
-};
+}__rte_cache_aligned;
 
 struct qdma_pkt_stats {
 	uint64_t pkts;
@@ -172,7 +172,7 @@ struct qdma_cmpt_queue {
 	int8_t		triggermode;
 	/* completion descriptor memzone */
 	const struct rte_memzone *cmpt_mz;
-};
+}__rte_cache_aligned;
 
 /**
  * Structure associated with each RX queue.

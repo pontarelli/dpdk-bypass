@@ -43,6 +43,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdatomic.h>
+
 
 #define PROFILE_START(name) uint64_t profile_##name = rte_rdtsc()
 #define PROFILE_END(name)                                                      \
@@ -504,12 +506,12 @@ static void adapt_update_counter(struct qdma_rx_queue *rxq,
 
 /* Process completion ring */
 static int process_cmpt_ring(struct qdma_rx_queue *rxq,
-                             uint16_t num_cmpt_entries) {
+                             uint16_t num_cmpt_entries, uint16_t rx_cmpt_tail) {
   struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
   union qdma_ul_st_cmpt_ring *user_cmpt_entry;
   uint32_t count = 0;
   int ret = 0;
-  uint16_t rx_cmpt_tail = rxq->cmpt_cidx_info.wrb_cidx;
+  //uint16_t rx_cmpt_tail= rxq->cmpt_cidx_info.wrb_cidx;
 
   if (likely(!rxq->dump_immediate_data)) {
     if ((rx_cmpt_tail + num_cmpt_entries) < (rxq->nb_rx_cmpt_desc - 1)) {
@@ -1207,10 +1209,12 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
    * accessing the ring
    */
   rte_rmb();
+  //atomic_thread_fence(memory_order_release); // ensure data is visible before flag
+
 #ifdef QDMA_LATENCY_OPTIMIZED
   adapt_update_counter(rxq, nb_pkts_avail);
 #endif // QDMA_LATENCY_OPTIMIZED
-  if (process_cmpt_ring(rxq, nb_pkts) != 0)
+  if (process_cmpt_ring(rxq, nb_pkts,rx_cmpt_tail) != 0)
     return 0;
 
   if (rxq->status != RTE_ETH_QUEUE_STATE_STARTED) {
@@ -1266,7 +1270,12 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       *cidx += total_rx_packets_back; // update the cidx by adding the number of packets received since last rearm
       if (*cidx >= (rxq->nb_rx_desc - 1)) // wrap around
         *cidx -= (rxq->nb_rx_desc - 1);
-      entries_to_alloc = rxq->q_pidx_info.pidx - *cidx - 1; // compute the number of entries available for the NIC to DMA in the RX ring
+      
+      // Compute entries_to_alloc using the updated cidx and the pidx
+      if (rxq->q_pidx_info.pidx >= *cidx)
+        entries_to_alloc = rxq->nb_rx_desc - 1 - (rxq->q_pidx_info.pidx - *cidx) ;
+      else
+        entries_to_alloc = *cidx - rxq->q_pidx_info.pidx;
       rte_rmb();
 
 
@@ -1281,8 +1290,10 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       mfprintf(stderr, "pidx: %u\n", rxq->q_pidx_info.pidx);
                         // the N_{avail} in toasty paper
       // buffers which are not allocated
+      mfprintf(stderr, "rx cidx: %u\n", rxq->rx_ring_cidx);
+      mfprintf(stderr, "rx pidx: %u\n", rxq->q_pidx_info.pidx);
       mfprintf(stderr, "entries_to_alloc: %u\n", entries_to_alloc);
-      uint32_t used_buff = rxq->nb_rx_desc - 1 - entries_to_alloc; // -N_{avail}
+      uint32_t used_buff = rxq->nb_rx_desc - 1 - entries_to_alloc;
       mfprintf(stderr, "nb_rx_desc: %u\n", rxq->nb_rx_desc);
       mfprintf(stderr, "used_buff: %u\n", used_buff);
 
@@ -1369,6 +1380,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
       // pidx update was here
         rxq->prev_c2h_pidx = curr_producer;
       }
+      mfprintf(stderr, "@@@@@@@@@@@@@@@@\n");
 
     } else if (pending_desc >= MIN_RX_PIDX_UPDATE_THRESHOLD) {
 
