@@ -348,21 +348,18 @@ uint64_t cmpl_error_dup = 0;
 uint64_t prev_cmpl_error = 0;
 uint64_t prev_cmpl_error_seq = 0;
 uint64_t prev_cmpl_error_dup = 0;
-uint32_t spin_time = 0;
 uint32_t miss = 0;
-uint32_t total = 0;
-uint32_t empty = 0;
-uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used
-                           to detect packet loss */
-uint32_t sw_debug_id[2048] = {
-    1}; /* software packet ID for each queue, used to detect packet loss */
+//uint32_t total = 0;
+//uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used
+                          // to detect packet loss */
+//uint32_t sw_debug_id[2048] = {1}; /* software packet ID for each queue, used to detect packet loss */
 
 uint32_t prefetch_distance = 4; /* prefetch distance for mbufs in burst */
 uint32_t cms_columns = 1048576; /* number of columns in the count-min sketch */
 uint32_t num_hash = 4;
 uint32_t num_rand = 0;
 /* Print out statistics on packets dropped */
-uint64_t measured_packets_rx = 0;
+
 
 uint64_t measured_tick = 0;
 uint64_t rx_pkt_prev = 0;
@@ -542,7 +539,7 @@ static void print_stats(void) {
       (unsigned long long)(total_packets_rx - total_packets_rx_prev),
       (unsigned long long)total_packets_dropped,
       (unsigned long long)(total_packets_dropped - total_packets_dropped_prev));
-  printf("total: %u\n", total);
+  //printf("total: %u\n", total);
   if (bypass)
     printf("With bypass\n");
   else
@@ -593,7 +590,7 @@ static void print_stats(void) {
   uint32_t full_counter = qdma_reg_read_usr(dev, 0x514C);
 
   printf("full_counter: %u\n", full_counter);
-  printf("full_counter+received: %'12lu\n", full_counter + measured_packets_rx);
+  //printf("full_counter+received: %'12lu\n", full_counter + measured_packets_rx);
 
   printf("\n====================================================\n");
 
@@ -1068,6 +1065,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
   /* main processing loop */
   static void main_loop(void) {
+    uint64_t measured_packets_rx = 0;
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     struct rte_mbuf *m;
     int sent;
@@ -1161,11 +1159,11 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           port_stats[portid][q].rx += nb_rx;
 
           for (j = 0; j < nb_rx; j++) {
-            total++;
             m = pkts_burst[j];
             uint16_t pkid = m->timesync; // using timesync field to store packet
                                          // ID for simplicity: global (not per
                                          // queue) packet counter
+            /*
             if ((sw_pkt_id != pkid) && (rx_queue == 1)) {
               /*
               printf("----------------------------------------------------\n");
@@ -1176,12 +1174,12 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               printf("pktid_prev: %d\n", pktid_prev);
               printf("completion error: %lu\n",cmpl_error);
               printf("----------------------------------------------------\n");
-              */
+              /
               cmpl_error++;
               sw_pkt_id =
                   pkid; // resync software packet ID to avoid cascading errors
-            }
-            if (pkid == pktid_prev)
+            }*/
+            /*if (pkid == pktid_prev)
               cmpl_error_dup++;
             if (pkid != (pktid_prev + 1) && (pkid != 0) &&
                 (pkid != pktid_prev)) {
@@ -1189,8 +1187,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               /*
               printf("lost completion entry\n");
               printf("pktid: %d\n", pkid);
-              printf("pktid_prev: %d\n", pktid_prev);*/
-            }
+              printf("pktid_prev: %d\n", pktid_prev);
+            }*/
 
             if (debug) {
               /*
@@ -1271,7 +1269,6 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                 printf("completion error: %lu\n", cmpl_error);
                 printf("pktid: %d\n", pkid);
                 printf("pktid_prev: %d\n", pktid_prev);
-                printf("total: %u\n", total);
                 printf(
                     "----------------------------------------------------\n");
               }
@@ -1292,7 +1289,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               if (debug_addr != (int64_t)rte_pktmbuf_mtod(m, void *)) {
                 printf(
                     "----------------------------------------------------\n");
-                printf("pkt_cnt=%u Packet ID: %d\n", total, payload_counter);
+                printf("Packet ID: %d\n", payload_counter);
                 printf("Debug: Packet data address mismatch! Expected "
                        "(phys_addr): %p, Actual (from payload): %p --",
                        (void *)rte_pktmbuf_mtod(m, void *), (void *)debug_addr);
@@ -1305,8 +1302,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               }
             }
             pktid_prev = pkid;
-            sw_debug_id[q]++;
-            sw_pkt_id++;
+            //sw_debug_id[q]++;
+            //sw_pkt_id++;
 
             /*printf("primo:\n");
               for (size_t i = 0; i < 32; i++) {
@@ -1388,15 +1385,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               update_cidx(
                   dev, q, cidx,
                   prefetch_tag[q & qmask]); // update cidx to rearm the ring
-            //  rte_spinlock_unlock(&lock);
+              //rte_spinlock_unlock(&lock);
             //}
-          }
-
-          if (nb_rx < MAX_PKT_BURST) {
-            spin_time++;
-          }
-          if (nb_rx == 0) {
-            empty++;
           }
         }
       }
@@ -2358,14 +2348,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       }
     }
 
-    printf("packets: %u\n", total);
     printf("RX packets: %" PRIu64 "\n", stats.ipackets);
     printf("TX packets: %" PRIu64 "\n", stats.opackets);
     printf("RX dropped: %" PRIu64 "\n", stats.imissed);
-    printf("measured RX packets: %.2f\n", (float)measured_packets_rx);
-    printf("measured RX Throughput: %.2f\n",
-           (double)measured_packets_rx /
-               ((double)end_time / (double)rte_get_timer_hz()));
+    
     printf("measured time: %.2f seconds\n",
            (double)end_time / (double)rte_get_timer_hz());
 
