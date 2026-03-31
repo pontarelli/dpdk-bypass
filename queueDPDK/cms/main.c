@@ -201,7 +201,7 @@ static void pcap_file_close(void) {
   }
 }
 
-uint16_t prev_qid=0;
+uint16_t prev_qid=0xffff;
 rte_spinlock_t lock = RTE_SPINLOCK_INITIALIZER;
 /* update cidx */
 static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
@@ -212,8 +212,8 @@ static void update_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
                        (uint32_t)(qid & 0x0FFFF));
     prev_qid = qid;
   }
-  qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
-                     (uint32_t)(qid & 0x0FFFF));
+  //qdma_reg_write_usr(dev, QDMA_BYPASS_REG_TABLE_PAGE_INDEX,
+  //                   (uint32_t)(qid & 0x0FFFF));
 
   // Write  cidx, valid, tag
   uint32_t val = (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
