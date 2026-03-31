@@ -51,6 +51,7 @@
 #include <sys/queue.h>
 #include <sys/types.h>
 #include <time.h>
+#include <rte_errno.h>
 
 #define CMD_LINE_OPT_MAC_UPDATING "mac-updating"
 #define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
@@ -2040,13 +2041,18 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               "mbuf_pool", nb_mbufs, MEMPOOL_CACHE_SIZE, 0,
               RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
         } else {
+          char pool_name[32];
+          snprintf(pool_name, sizeof(pool_name), "mbuf_pool_%d", i);
           pktmbuf_pool[i] = rte_mempool_create_empty(
-              "mbuf_pool", nb_mbufs,
+              pool_name, nb_mbufs,
               RTE_MBUF_DEFAULT_BUF_SIZE + sizeof(struct rte_mbuf),
               MEMPOOL_CACHE_SIZE, sizeof(struct rte_pktmbuf_pool_private),
               SOCKET_ID_ANY, rte_socket_id());
-          if (pktmbuf_pool[i] == NULL)
-            rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
+          if (pktmbuf_pool[i] == NULL) {
+            // Check rte_errno for more details on the error
+             rte_exit(EXIT_FAILURE, "Cannot create empty mempool for queue %u: %s\n", i,
+                      rte_strerror(rte_errno));
+          }
 
           if (rte_mempool_set_ops_byname(pktmbuf_pool[i], "stack", NULL) < 0)
             rte_panic("mempool_set_ops stack failed\n");
