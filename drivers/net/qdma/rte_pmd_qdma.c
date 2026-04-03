@@ -51,6 +51,7 @@
 #include "qdma_access_common.h"
 #include "rte_pmd_qdma.h"
 #include "qdma_devops.h"
+#include <rte_ioat_rawdev.h>
 
 
 static int validate_qdma_dev_info(int port_id, uint16_t qid)
@@ -1893,3 +1894,48 @@ void rte_pmd_qdma_set_shring(uint16_t port_id, uint16_t queue_id,  uint16_t queu
 	}
 }
 
+int rte_pmd_qdma_setup_intel_dsa(void) {
+  uint32_t i, count;
+  int found = 0;
+  count = rte_rawdev_count();
+  // Find the IOAT PMD rawdev
+  for (i = 0; i < count && !found; i++) {
+    struct rte_rawdev_info info = {.dev_private = NULL};
+    found = (rte_rawdev_info_get(i, &info, 0) == 0 &&
+             strcmp(info.driver_name, IOAT_PMD_RAWDEV_NAME_STR) == 0);
+  }
+  // Configure IOAT PMD for DSA support if found
+  if (found) {
+    struct rte_ioat_rawdev_config p = {.ring_size = -1};
+    struct rte_rawdev_info info = {.dev_private = &p};
+    p.ring_size = 32; // Set the ring size for IOAT PMD
+    if (rte_rawdev_configure(i, &info, sizeof(p)) != 0) {
+      printf("Error with rte_rawdev_configure()\n");
+      return -1;
+    }
+  } else {
+    PMD_DRV_LOG(INFO, "IOAT PMD not found, DSA support not enabled\n");
+  }
+  return 0;
+}
+
+int rte_pmd_qdma_enable_intel_dsa(uint16_t port_id, uint16_t queue_id) {
+  struct rte_eth_dev *dev;
+  struct qdma_pci_dev *qdma_dev;
+
+  if (port_id >= rte_eth_dev_count_avail()) {
+    PMD_DRV_LOG(ERR, "Wrong port id %d\n", port_id);
+    return -ENOTSUP;
+  }
+  dev = &rte_eth_devices[port_id];
+  // Get struct rx_queue for the queue_id
+  if (queue_id >= dev->data->nb_rx_queues) {
+    PMD_DRV_LOG(ERR, "Wrong queue id %d\n", queue_id);
+    return -ENOTSUP;
+  }
+  qdma_dev = dev->data->dev_private;
+  // Set the DSA enable bit in the queue context
+  qdma_dev->q_info[queue_id].en_intel_dsa = 1;
+
+  return 0;
+}

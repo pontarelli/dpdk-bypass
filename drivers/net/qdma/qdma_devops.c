@@ -407,6 +407,11 @@ int qdma_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
   else
     rxq->shring_enabled = 0;
 
+  if (qdma_dev->q_info[rx_queue_id].en_intel_dsa)
+    rxq->en_intel_dsa = 1;
+  else
+    rxq->en_intel_dsa = 0;
+
   rxq->en_prefetch = qdma_dev->q_info[rx_queue_id].en_prefetch;
   rxq->cmpt_desc_len = qdma_dev->q_info[rx_queue_id].cmpt_desc_sz;
   if ((rxq->cmpt_desc_len == RTE_PMD_QDMA_CMPT_DESC_LEN_64B) &&

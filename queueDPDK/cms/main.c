@@ -1526,6 +1526,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                                       "L"  /* enable LIFO */
                                       "t"  /* enable toasty logic */
                                       "s"  /* enable shRing logic */
+                                      "I"  /* enable Intel DSA */
       ;
 
   enum {
@@ -1662,6 +1663,14 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         ret = parse_port_pair_config(optarg);
         if (ret) {
           fprintf(stderr, "Invalid config\n");
+          usage(prgname);
+          return -1;
+        }
+        break;
+      case 'I':
+        ret = rte_pmd_qdma_setup_intel_dsa();
+        if (ret) {
+          fprintf(stderr, "Failed to setup Intel DSA\n");
           usage(prgname);
           return -1;
         }
