@@ -611,6 +611,8 @@ extern "C" {
 
 // Base address for bypass registers is 0x5000
 #define QDMA_BYPASS_REG_BASE               0x5000
+#define QDMA_BYPASS_REG_PCIE_LOWER_ADDR   (QDMA_BYPASS_REG_BASE + 0x110)
+#define QDMA_BYPASS_REG_PCIE_UPPER_ADDR   (QDMA_BYPASS_REG_BASE + 0x114)
 #define QDMA_BYPASS_REG_ADDR_LOWER         (QDMA_BYPASS_REG_BASE + 0x110)
 #define QDMA_BYPASS_REG_ADDR_UPPER         (QDMA_BYPASS_REG_BASE + 0x114)
 #define QDMA_BYPASS_REG_PORT_ID			(QDMA_BYPASS_REG_BASE + 0x118)
@@ -635,6 +637,7 @@ extern "C" {
 
 #define MDMA_C2H_PFCH_BYP_QID 		0x1408
 #define MDMA_C2H_PFCH_BYP_TAG 		0x140C
+
 
 #ifdef __cplusplus
 }

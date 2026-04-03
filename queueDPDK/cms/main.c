@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2016 Intel Corporation
  */
-
 #include "drivers/net/qdma/rte_pmd_qdma.h"
 #include "hashmap.h"
 #include "load_balancer.h"
@@ -52,6 +51,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <rte_errno.h>
+#include <unistd.h>
 
 #define CMD_LINE_OPT_MAC_UPDATING "mac-updating"
 #define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
@@ -95,6 +95,10 @@ int qdma_read_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64
 int qdma_write_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag,  uint8_t valid, uint32_t num_desc);
 
 
+int qdma_write_bypass_reg_pcie_addr(void* dev_hndl, uint64_t pcie_addr);
+int qdma_read_bypass_reg_pcie_addr(void *dev_hndl, uint64_t* pcie_addr);
+
+
 int qdma_bypass_clear_counters(void *dev_hndl);
 int qdma_bypass_direct_clear_counters(void *dev_hndl);
 int qdma_write_bypass_reg_debug(void *dev_hndl, uint8_t debug);
@@ -131,6 +135,8 @@ typedef struct {
 } pcap_packet_header_t;
 
 static FILE *pcap_file = NULL;
+
+uint64_t *dma_counter = NULL; // Global pointer to hold the DMA counter address
 
 /* Initialize PCAP file for writing */
 static int pcap_file_open(const char *filename) {
@@ -225,6 +231,10 @@ static void update_direct_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t 
 
   // Write  cidx, valid, tag
   uint32_t val = (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
+  //uint32_t offset= qid = (qid & 0x0f)*16+QDMA_BYPASS_REG_TABLE + 12;
+  //qid = qid >>4;
+  //uint32_t val = (qid <<16)| (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
+  //qdma_reg_write_usr(dev, offset, val);
   qdma_reg_write_usr(dev, qid*16+QDMA_BYPASS_REG_TABLE + 12, val);
 }
 
@@ -1101,7 +1111,13 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
     uint16_t pktid_prev = 255;
 
+    uint64_t loop_count = 0;
+
     while (!force_quit) {
+      //fprintf(stderr, "DMA counter content: %lu\n", *dma_counter);
+      //print_stats();
+      //sleep(1);
+      //continue;
       // if (total >300) {
       //   print_stats();
       //   break;
@@ -1155,7 +1171,23 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           //{
           uint32_t q = rx_queue_per_core*qconf->id+ii; 
 
-          nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
+          //loop_count++;
+          //if (loop_count % 10000000 == 0) {
+          //  // Get rx queue
+          //  //struct rte_eth_dev_data *data = dev->data;
+          //  //struct qdma_pci_dev *qdma_dev;
+          //  //if (portid >= rte_eth_dev_count_avail()) {
+          //  //  continue;
+          //  //}
+          //  //dev = &rte_eth_devices[portid];
+          //  //if (q >= dev->data->nb_rx_queues) {
+          //  //  continue;
+          //  //}
+          //  //struct qdma_rx_queue *rxq = dev->data->rx_queues[q];
+          //  fprintf(stderr, "Queue id: %u packet counter %lu queue tail %u\n", q, *dma_counter, rte_qdma_get_rx_queue_tail(portid, q));
+          //}
+          nb_rx = rte_eth_rx_burst_full_bypass(portid, q, pkts_burst, MAX_PKT_BURST, dma_counter);
+          //nb_rx = rte_eth_rx_burst(portid, q, pkts_burst, MAX_PKT_BURST);
 
           port_stats[portid][q].rx += nb_rx;
 
@@ -1356,6 +1388,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             }
 
             process_packet(m);
+
+            // Print the content of dma_counter
+            //fprintf(stderr, "DMA counter content: %lu\n", *dma_counter);
 
             if ((!bypass) && (!retransmit)) {
               rte_pktmbuf_free(m);
@@ -2303,6 +2338,28 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         // reset counters
         qdma_bypass_direct_clear_counters(dev);
         //qdma_bypass_clear_counters(dev);
+        dma_counter = rte_zmalloc(NULL, sizeof(uint64_t), 64);
+        if (dma_counter == NULL) {
+          rte_exit(EXIT_FAILURE, "Failed to allocate DMA memory\n");
+        }
+        *dma_counter = 0; // Initialize counter to 0
+        // Get physical address of the allocated memory
+        rte_iova_t dma_counter_phys_addr = rte_malloc_virt2iova(dma_counter);
+        if (dma_counter_phys_addr == RTE_BAD_IOVA) {
+          rte_exit(EXIT_FAILURE, "Failed to get physical address of DMA memory\n");
+        }
+        fprintf(stderr, "DMA counter allocated at virtual address %p, physical address 0x%lx\n",
+               dma_counter, dma_counter_phys_addr);
+        uint64_t reg_val;
+        // Pass the physical address to the device via register write
+        //qdma_write_bypass_reg_pcie_addr(dev, dma_counter_phys_addr);
+        qdma_write_bypass_reg_pcie_addr(dev, dma_counter_phys_addr);
+        // Read the value just written to confirm
+        qdma_read_bypass_reg_pcie_addr(dev, &reg_val);
+        fprintf(stderr, "Value read back from device register: 0x%lx\n", reg_val);
+        if (reg_val != dma_counter_phys_addr) {
+          rte_exit(EXIT_FAILURE, "Mismatch in physical address read back from device\n");
+        }
       }
 
       printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n", portid,
@@ -2345,6 +2402,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       }
 
     ret = 0;
+    // Allocate 4 bytes of DMA coherent memory
+
+
     /* launch per-lcore init on every lcore */
     rte_eal_mp_remote_launch(launch_one_lcore, NULL, CALL_MAIN);
     RTE_LCORE_FOREACH_WORKER(lcore_id) {

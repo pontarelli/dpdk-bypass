@@ -1309,7 +1309,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
         buff_to_alloc = curr_producer + (rxq->nb_rx_desc - 1) - prev_producer; // N_{FQ}
       // uint32_t batch_limit = rx_ring->count / 8;
       uint32_t batch_limit = //  32;
-        rxq->nb_rx_desc / 8; // this is the max number of buffers we want to
+        rxq->nb_rx_desc / 4; // this is the max number of buffers we want to
                                // allocate in one go, TO BE TUNED
       uint32_t to_alloc = 0;
       bool force_sync = false;
@@ -1406,7 +1406,7 @@ uint16_t qdma_recv_pkts_st(struct qdma_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 
       /* Synchronization / Drift correction */
       if (force_sync || buff_to_alloc > (rxq->nb_rx_desc / 2)) {
-      // pidx update was here
+        // Both update must be here
         rxq->prev_c2h_pidx = curr_producer;
         rxq->prev_cmpt_pidx = cmpt_pidx;
       }

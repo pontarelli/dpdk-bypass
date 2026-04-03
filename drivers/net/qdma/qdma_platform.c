@@ -180,7 +180,16 @@ uint32_t qdma_reg_read_usr(void *dev_hndl, uint32_t reg_offst)
 	uint64_t bar_addr;
 	uint32_t val;
 
+	if (dev_hndl == NULL) {
+		fprintf(stderr, "Error: dev_hndl is NULL in qdma_reg_read_usr\n");
+		return 0; // or some error code
+	}
+
 	qdma_dev = ((struct rte_eth_dev *)dev_hndl)->data->dev_private;
+	if (qdma_dev == NULL) {
+		fprintf(stderr, "Error: qdma_dev is NULL in qdma_reg_read_usr\n");
+		return 0; // or some error code
+	}
 	bar_addr = (uint64_t)qdma_dev->bar_addr[qdma_dev->user_bar_idx];
 	val = *((volatile uint32_t *)(bar_addr + reg_offst));
 	// printf("qdma_reg_read returning value: %x\n", val);

@@ -6716,3 +6716,39 @@ int qdma_bypass_direct_clear_counters(void *dev_hndl) {
 		0);
 
 }
+
+//int qdma_bypass_reg_write_pcie_addr(void *dev_hndl, uint64_t pcie_addr) {
+int qdma_write_bypass_reg_pcie_addr(void *dev_hndl, uint64_t pcie_addr) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_PCIE_LOWER_ADDR,
+		(uint32_t)(pcie_addr & 0xFFFFFFFF));
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_PCIE_UPPER_ADDR,
+		(uint32_t)((pcie_addr >> 32) & 0xFFFFFFFF));
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_pcie_addr(void *dev_hndl, uint64_t *pcie_addr) {
+	uint32_t addr_lo, addr_hi;
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!pcie_addr) {
+		qdma_log_error("%s: pcie_addr is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	addr_lo = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_PCIE_LOWER_ADDR);
+	addr_hi = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_PCIE_UPPER_ADDR);
+	*pcie_addr = ((uint64_t)addr_hi << 32) | (uint64_t)addr_lo;
+	return QDMA_SUCCESS;
+}

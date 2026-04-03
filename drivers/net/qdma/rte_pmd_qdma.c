@@ -32,6 +32,7 @@
 
 
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/mman.h>
 #include <sys/fcntl.h>
 #include <rte_memzone.h>
@@ -1893,3 +1894,420 @@ void rte_pmd_qdma_set_shring(uint16_t port_id, uint16_t queue_id,  uint16_t queu
 	}
 }
 
+/******** User logic dependent functions start **********/
+static int qdma_ul_extract_st_cmpt_info_v(void *ul_cmpt_entry,
+                                          void *cmpt_info) {
+  union qdma_ul_st_cmpt_ring *cmpt_data, *cmpt_desc;
+
+  cmpt_desc = (union qdma_ul_st_cmpt_ring *)(ul_cmpt_entry);
+  cmpt_data = (union qdma_ul_st_cmpt_ring *)(cmpt_info);
+
+  cmpt_data->data = cmpt_desc->data;
+
+  return 0;
+}
+static int process_cmpt_ring(struct qdma_rx_queue *rxq,
+                             uint16_t num_cmpt_entries, uint16_t rx_cmpt_tail) {
+  struct qdma_pci_dev *qdma_dev = rxq->dev->data->dev_private;
+  union qdma_ul_st_cmpt_ring *user_cmpt_entry;
+  uint32_t count = 0;
+  int ret = 0;
+  //uint16_t rx_cmpt_tail= rxq->cmpt_cidx_info.wrb_cidx;
+
+  if (likely(!rxq->dump_immediate_data)) {
+    if ((rx_cmpt_tail + num_cmpt_entries) < (rxq->nb_rx_cmpt_desc - 1)) {
+      for (count = 0; count < num_cmpt_entries; count++) {
+        user_cmpt_entry =
+            (union qdma_ul_st_cmpt_ring *)((uint64_t)rxq->cmpt_ring +
+                                           ((uint64_t)rx_cmpt_tail *
+                                            rxq->cmpt_desc_len));
+
+        ret = qdma_ul_extract_st_cmpt_info_v(user_cmpt_entry,
+                                             &rxq->cmpt_data[count]);
+        if (ret != 0) {
+          PMD_DRV_LOG(ERR,
+                      "Error detected on CMPT ring "
+                      "at index %d, queue_id = %d\n",
+                      rx_cmpt_tail, rxq->queue_id);
+          rxq->err = 1;
+          return -1;
+        }
+        rx_cmpt_tail++;
+      }
+    } else {
+      while (count < num_cmpt_entries) {
+        user_cmpt_entry =
+            (union qdma_ul_st_cmpt_ring *)((uint64_t)rxq->cmpt_ring +
+                                           ((uint64_t)rx_cmpt_tail *
+                                            rxq->cmpt_desc_len));
+
+        ret = qdma_ul_extract_st_cmpt_info_v(user_cmpt_entry,
+                                             &rxq->cmpt_data[count]);
+        if (ret != 0) {
+          PMD_DRV_LOG(ERR,
+                      "Error detected on CMPT ring "
+                      "at index %d, queue_id = %d\n",
+                      rx_cmpt_tail, rxq->queue_id);
+          rxq->err = 1;
+          return -1;
+        }
+
+        rx_cmpt_tail++;
+        if (unlikely(rx_cmpt_tail >= (rxq->nb_rx_cmpt_desc - 1)))
+          rx_cmpt_tail -= (rxq->nb_rx_cmpt_desc - 1);
+        count++;
+      }
+    }
+  } else {
+    while (count < num_cmpt_entries) {
+      user_cmpt_entry =
+          (union qdma_ul_st_cmpt_ring *)((uint64_t)rxq->cmpt_ring +
+                                         ((uint64_t)rx_cmpt_tail *
+                                          rxq->cmpt_desc_len));
+
+      ret =
+          qdma_ul_extract_st_cmpt_info(user_cmpt_entry, &rxq->cmpt_data[count]);
+      if (ret != 0) {
+        PMD_DRV_LOG(ERR,
+                    "Error detected on CMPT ring "
+                    "at CMPT index %d, queue_id = %d\n",
+                    rx_cmpt_tail, rxq->queue_id);
+        rxq->err = 1;
+        return -1;
+      }
+
+      ret = qdma_ul_process_immediate_data_st((void *)rxq, user_cmpt_entry,
+                                              rxq->cmpt_desc_len);
+      if (ret < 0) {
+        PMD_DRV_LOG(ERR,
+                    "Error processing immediate data "
+                    "at CMPT index = %d, queue_id = %d\n",
+                    rx_cmpt_tail, rxq->queue_id);
+        return -1;
+      }
+
+      rx_cmpt_tail++;
+      if (unlikely(rx_cmpt_tail >= (rxq->nb_rx_cmpt_desc - 1)))
+        rx_cmpt_tail -= (rxq->nb_rx_cmpt_desc - 1);
+      count++;
+    }
+  }
+
+  // Update the CPMT CIDX
+  rxq->cmpt_cidx_info.wrb_cidx = rx_cmpt_tail;
+
+  // if (!(rxq->en_bypass && rxq->en_bypass_prefetch)) {
+  qdma_dev->hw_access->qdma_queue_cmpt_cidx_update(
+      rxq->dev, qdma_dev->is_vf, rxq->queue_id, &rxq->cmpt_cidx_info);
+  //}
+
+  return 0;
+}
+
+
+static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
+                                                 uint16_t pkt_length,
+                                                 uint16_t *tail,
+                                                 uint16_t wrap) {
+  struct rte_mbuf *mb;
+  struct rte_mbuf *first_seg = NULL;
+  struct rte_mbuf *last_seg = NULL;
+  uint16_t id = *tail;
+  uint16_t length;
+  uint16_t rx_buff_size = rxq->rx_buff_size;
+
+  do {
+    mb = rxq->sw_ring[id];
+    //if (mb == NULL) {
+    //  fprintf(stderr, "prepare_segmented_packet: pkt_length %u, id %u, wrap %u\n",
+    //      pkt_length, id, wrap);
+    //  fprintf(stderr, "Rx ring pidx %u, tail %u, cidx %u\n", rxq->q_pidx_info.pidx, rxq->rx_tail, rxq->rx_ring_cidx);
+    //  fprintf(stderr, "prepare_segmented_packet: mb %p\n", (void *)mb);
+    //  exit(1);
+    //}
+    // sal: cambio qui per mantenere i descrittori!
+    if (rxq->en_bypass && rxq->en_bypass_prefetch) {
+      id++;
+      if (unlikely(wrap == 1)) {
+        rxq->rx_wraps256++;
+        id = (id >= 256) ? (id - 256) : (id + rxq->nb_rx_desc - 257);
+      }
+      if (unlikely(wrap == 2)) {
+        rxq->rx_wraps512++;
+        id = (id >= 512) ? (id - 512) : (id + rxq->nb_rx_desc - 513);
+      }
+    } else
+      rxq->sw_ring[id++] = NULL;
+
+    length = pkt_length;
+
+    if (unlikely(id >= (rxq->nb_rx_desc - 1)))
+      id -= (rxq->nb_rx_desc - 1);
+    if (pkt_length > rx_buff_size) {
+      rte_pktmbuf_data_len(mb) = rx_buff_size;
+      pkt_length -= rx_buff_size;
+    } else {
+      rte_pktmbuf_data_len(mb) = pkt_length;
+      pkt_length = 0;
+    }
+    rte_mbuf_refcnt_set(mb, 1);
+    if (first_seg == NULL) {
+      first_seg = mb;
+      first_seg->nb_segs = 1;
+      first_seg->pkt_len = length;
+      first_seg->packet_type = 0;
+      first_seg->ol_flags = 0;
+      first_seg->port = rxq->port_id;
+      first_seg->vlan_tci = 0;
+      first_seg->hash.rss = 0;
+    } else {
+      first_seg->nb_segs++;
+      if (last_seg != NULL)
+        last_seg->next = mb;
+    }
+
+    last_seg = mb;
+    mb->next = NULL;
+  } while (pkt_length);
+
+  *tail = id;
+  return first_seg;
+}
+
+static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
+                                struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
+  uint16_t count_pkts = 0;
+  struct rte_mbuf *mb;
+  uint16_t pkt_length;
+  uint16_t pkt_id;
+  uint16_t count = 0;
+  uint16_t wrap = 0;
+  //fprintf(stderr, "process %u packets from %u to %u\n", nb_pkts, rxq->rx_tail, (rxq->rx_tail + nb_pkts) % (rxq->nb_rx_desc - 1));
+  while (count < nb_pkts) {
+    pkt_length = qdma_ul_get_cmpt_pkt_len(&rxq->cmpt_data[count]);
+    pkt_id = qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
+    wrap = qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);
+    if (pkt_length) {
+      rxq->stats.pkts++;
+      rxq->stats.bytes += pkt_length;
+      mb = prepare_segmented_packet(rxq, pkt_length, &rxq->rx_tail, wrap);
+      
+      mb->timesync = pkt_id;
+      mb->dynfield1[0] = wrap;
+      rx_pkts[count_pkts++] = mb;
+    }
+    count++;
+  }
+  return count_pkts;
+}
+
+static uint16_t prepare_packets_full_bypass(struct qdma_rx_queue *rxq,
+                                struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
+  uint16_t count_pkts = 0;
+  struct rte_mbuf *mb;
+  uint16_t pkt_length;
+  uint16_t pkt_id;
+  uint16_t count = 0;
+  uint16_t wrap = 0;
+  //fprintf(stderr, "process %u packets from %u to %u\n", nb_pkts, rxq->rx_tail, (rxq->rx_tail + nb_pkts) % (rxq->nb_rx_desc - 1));
+  while (count < nb_pkts) {
+    pkt_length = qdma_ul_get_cmpt_pkt_len(&rxq->cmpt_data[count]);
+    pkt_id = qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
+    wrap = qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);
+    if (pkt_length) {
+      rxq->stats.pkts++;
+      rxq->stats.bytes += pkt_length;
+      mb = prepare_segmented_packet(rxq, pkt_length, &rxq->rx_tail, wrap);
+      
+      mb->timesync = pkt_id;
+      mb->dynfield1[0] = wrap;
+      rx_pkts[count_pkts++] = mb;
+    }
+    count++;
+  }
+  return count_pkts;
+}
+
+
+uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mbuf **pkts_burst, uint16_t nb_pkts, uint64_t* packet_counter) {
+
+
+	// We can get the number of packets received by:
+	// - reading the pidx from the packet_counter
+	// - reading the cidx from the queue context
+	// - calculating the number of packets received as (pidx - cidx) mod queue size
+
+  uint16_t count_pkts;
+  struct wb_status *wb_status;
+  uint16_t nb_pkts_avail = 0;
+  uint16_t rx_cmpt_tail = 0;
+  uint16_t cmpt_pidx, c2h_pidx, c2h_cidx;
+  uint16_t pending_desc;
+  uint32_t total_rx_packets_back;
+  uint32_t total_rx_packets;
+  uint32_t entries_to_alloc;
+  uint16_t* cidx;
+#ifdef TEST_64B_DESC_BYPASS
+  int bypass_desc_sz_idx = qmda_get_desc_sz_idx(rxq->bypass_desc_sz);
+#endif
+
+  struct rte_eth_dev *dev;
+  struct qdma_pci_dev *qdma_dev;
+  if (portid >= rte_eth_dev_count_avail()) {
+  	PMD_DRV_LOG(ERR, "Wrong port id %d\n", portid);
+  	return 0;
+  }
+  dev = &rte_eth_devices[portid];
+  if (q >= dev->data->nb_rx_queues) {
+  	PMD_DRV_LOG(ERR, "Wrong queue id %d\n", q);
+  	return 0;
+  }
+  struct qdma_rx_queue *rxq = dev->data->rx_queues[q];
+  qdma_dev = dev->data->dev_private;
+
+  if (unlikely(rxq->err))
+    return 0;
+
+  PMD_DRV_LOG(DEBUG,
+              "recv start on rx queue-id :%d, on "
+              "tail index:%d number of pkts %d",
+              rxq->queue_id, rxq->rx_tail, nb_pkts);
+  wb_status = rxq->wb_status;
+  rx_cmpt_tail = rxq->cmpt_cidx_info.wrb_cidx;
+  c2h_pidx = rxq->q_pidx_info.pidx;
+  
+  uint16_t c2h_rx_pidx = *packet_counter;
+  uint16_t c2h_rx_cidx = rxq->rx_tail;
+
+#ifdef TEST_64B_DESC_BYPASS
+  if (unlikely(rxq->en_bypass &&
+               bypass_desc_sz_idx == SW_DESC_CNTXT_64B_BYPASS_DMA)) {
+    PMD_DRV_LOG(DEBUG, "For  RX ST-mode, example"
+                       " design doesn't support 64byte descriptor\n");
+    return 0;
+  }
+#endif
+
+  cmpt_pidx = wb_status->pidx;
+  // read memory barrier
+  rte_rmb();
+
+  if (c2h_rx_cidx < c2h_rx_pidx)
+    nb_pkts_avail = c2h_rx_pidx - c2h_rx_cidx;
+  else if (c2h_rx_cidx > c2h_rx_pidx)
+    nb_pkts_avail = rxq->nb_rx_desc - 1 - c2h_rx_cidx + c2h_rx_pidx;
+
+  if (nb_pkts_avail == 0) {
+    PMD_DRV_LOG(DEBUG, "%s(): %d: nb_pkts_avail = 0\n", __func__, __LINE__);
+    return 0;
+  }
+
+
+  if (nb_pkts > QDMA_MAX_BURST_SIZE)
+    nb_pkts = QDMA_MAX_BURST_SIZE;
+
+  if (nb_pkts > nb_pkts_avail)
+    nb_pkts = nb_pkts_avail;
+
+	// Debug print
+	//fprintf(stderr, "c2h_rx_pidx: %u, c2h_rx_cidx: %u, nb_pkts_avail: %u\n",
+	//	c2h_rx_pidx, c2h_rx_cidx, nb_pkts_avail);
+
+
+
+#ifdef DUMP_MEMPOOL_USAGE_STATS
+  PMD_DRV_LOG(DEBUG,
+              "%s(): %d: queue id = %d, mbuf_avail_count = %d, "
+              "mbuf_in_use_count = %d",
+              __func__, __LINE__, rxq->queue_id,
+              rte_mempool_avail_count(rxq->mb_pool),
+              rte_mempool_in_use_count(rxq->mb_pool));
+#endif // DUMP_MEMPOOL_USAGE_STATS
+  /* Make sure reads to CMPT ring are synchronized before
+   * accessing the ring
+   */
+  rte_rmb();
+  //atomic_thread_fence(memory_order_release); // ensure data is visible before flag
+
+#ifdef QDMA_LATENCY_OPTIMIZED
+  adapt_update_counter(rxq, nb_pkts_avail);
+#endif // QDMA_LATENCY_OPTIMIZED
+  if (process_cmpt_ring(rxq, nb_pkts,rx_cmpt_tail) != 0) {
+    fprintf(stderr, "Error processing completion ring\n");
+    return 0;
+  }
+
+  if (rxq->status != RTE_ETH_QUEUE_STATE_STARTED) {
+    PMD_DRV_LOG(DEBUG, "%s(): %d: rxq->status = %d\n", __func__, __LINE__,
+                rxq->status);
+    return 0;
+  }
+
+  //if (nb_pkts != 0)
+  //  fprintf(stderr, "Processing %u packets\n", nb_pkts);
+
+  count_pkts = prepare_packets(rxq, pkts_burst, nb_pkts);
+  //fprintf(stderr, "Prepared %u packets\n", count_pkts);
+
+
+  PMD_DRV_LOG(DEBUG, " Recv complete with hw cidx :%d", rxq->wb_status->cidx);
+  PMD_DRV_LOG(DEBUG, " Recv complete with hw pidx :%d\n", rxq->wb_status->pidx);
+
+
+  // PROFILE_END(recv_pkts_st);
+  return count_pkts;
+    //fprintf(stderr, "Pending desc: %u\n", pending_desc);
+    // pending_desc is the number of descriptors that haven't been rearmed yet
+	//struct rte_eth_dev *dev;
+	//struct qdma_pci_dev *qdma_dev;
+	//if (portid >= rte_eth_dev_count_avail()) {
+	//	PMD_DRV_LOG(ERR, "Wrong port id %d\n", portid);
+	//	return 0;
+	//}
+	//dev = &rte_eth_devices[portid];
+	//if (q >= dev->data->nb_rx_queues) {
+	//	PMD_DRV_LOG(ERR, "Wrong queue id %d\n", q);
+	//	return 0;
+	//}
+	//struct qdma_rx_queue *rxq = dev->data->rx_queues[q];
+	//qdma_dev = dev->data->dev_private;
+	//uint16_t pidx = *packet_counter;
+	//uint16_t cidx = rxq->rx_tail;
+	//uint16_t nb_rx = 0;
+	//// TODO: check the -1
+	//if (pidx >= cidx) {
+	//	nb_rx = pidx - cidx;
+	//} else {
+	//	nb_rx = rxq->nb_rx_desc - cidx + pidx;
+	//}
+	//if (nb_rx > nb_pkts) {
+	//	nb_rx = nb_pkts;
+	//}
+	//// Populate the pkts_burst array with the received packets
+	//for (uint16_t i = 0; i < nb_rx; i++) {
+	//	uint16_t idx = (cidx + i) % rxq->nb_rx_desc;
+	//	pkts_burst[i] = rxq->rx_ring[idx];
+	//}
+	//rxq->rx_tail = (rxq->rx_tail + nb_rx) % rxq->nb_rx_desc;
+	//*packet_counter += nb_rx;
+	//return nb_rx;
+
+}
+
+uint32_t rte_qdma_get_rx_queue_tail(uint16_t portid, uint16_t q) {
+  struct rte_eth_dev *dev;
+  struct qdma_pci_dev *qdma_dev;
+  if (portid >= rte_eth_dev_count_avail()) {
+	PMD_DRV_LOG(ERR, "Wrong port id %d\n", portid);
+	return 0;
+  }
+  dev = &rte_eth_devices[portid];
+  if (q >= dev->data->nb_rx_queues) {
+	PMD_DRV_LOG(ERR, "Wrong queue id %d\n", q);
+	return 0;
+  }
+  struct qdma_rx_queue *rxq = dev->data->rx_queues[q];
+  qdma_dev = dev->data->dev_private;
+
+  return rxq->rx_tail;
+}
