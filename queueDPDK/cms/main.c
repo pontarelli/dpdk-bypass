@@ -225,9 +225,42 @@ static void update_direct_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t 
 
   // Write  cidx, valid, tag
   uint32_t val = (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
+
   qdma_reg_write_usr(dev, qid*16+QDMA_BYPASS_REG_TABLE + 12, val);
+
+}
+/* update cidx */
+static void update_direct2_cidx(void *dev, uint16_t qid, uint16_t cidx, uint32_t tag) {
+
+  // Write  cidx, valid, tag
+  uint32_t offset= (qid & 0x0f)*16+QDMA_BYPASS_REG_TABLE + 12;
+  qid = qid >>4;
+  uint32_t val = (qid <<24)| (cidx << 8) | (0x1 << 7) | (tag & 0x3F);
+  qdma_reg_write_usr(dev, offset, val);
 }
 
+static void qdma_write_direct2_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t addr, uint32_t tag, uint8_t valid, uint32_t num_desc) {
+
+        // Write the address
+        qdma_reg_write_usr(dev_hndl,
+                qid*16+QDMA_BYPASS_REG_TABLE,
+                (uint32_t)(addr & 0xFFFFFFFF));
+        qdma_reg_write_usr(dev_hndl,
+                qid*16+QDMA_BYPASS_REG_TABLE + 4,
+                (uint32_t)((addr >> 32) & 0xFFFFFFFF));
+        // Write num desc
+        qdma_reg_write_usr(dev_hndl,
+                qid*16+QDMA_BYPASS_REG_TABLE + 8,
+                num_desc);
+	// Write tag and valid
+	uint32_t offset= (qid & 0x0f)*16+QDMA_BYPASS_REG_TABLE + 12;
+	qid = qid >>4;
+	tag =  tag & 0x3F;
+	tag =  valid ? (tag | (0x1 << 7)) : (tag & ~(0x1 << 7));
+	uint16_t cidx=0;
+	uint32_t val = (qid <<24)| (cidx << 8) | tag;
+	qdma_reg_write_usr(dev_hndl, offset, val);
+}
 
 /* Read pidx */
 static uint32_t get_bypass_pidx(void *dev, uint16_t qid) {
@@ -1382,7 +1415,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               cidx = get_cidx_tx(dev->data->tx_queues[q],
                                  elastic); // read updated cidx from TX queue
             //if (rte_spinlock_trylock(&lock)) {
-              update_direct_cidx(
+              update_direct2_cidx(
+              //update_direct_cidx(
               //update_cidx(
                   dev, q, cidx,
                   prefetch_tag[q & qmask]); // update cidx to rearm the ring
@@ -1814,7 +1848,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         else
           cidx = get_cidx_tx(dev->data->tx_queues[q],
                              elastic); // read updated cidx from TX queue
-        update_direct_cidx(dev, q, cidx,
+        update_direct2_cidx(dev, q, cidx,
+        //update_direct_cidx(dev, q, cidx,
         //update_cidx(dev, q, cidx,
                     prefetch_tag[q]); // update cidx to rearm the ring
       }
@@ -2284,7 +2319,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
             q1_phys_addr_start = phys_addr;
 
           printf("Phys addr %08lx\n", phys_addr);
-          qdma_write_direct_queue_bypass_registers(
+          qdma_write_direct2_queue_bypass_registers(
+          //qdma_write_direct_queue_bypass_registers(
           //qdma_write_queue_bypass_registers(
               dev, qid, phys_addr, prefetch_tag[qid & qmask], 1, nb_rxd);
         }
@@ -2379,7 +2415,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
 
     if (bypass) {
       for (uint32_t qid = 0; qid < rx_queue; qid++) {
-        qdma_write_direct_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+        qdma_write_direct2_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
+        //qdma_write_direct_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
         //qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
       }
     }
