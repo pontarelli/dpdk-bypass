@@ -740,6 +740,7 @@ void rte_pmd_qdma_enable_shring_logic(uint16_t port_id, uint16_t queue_id);
 void rte_pmd_qdma_set_shring(uint16_t port_id, uint16_t queue_id,  uint16_t queue_id0);
 uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mbuf **pkts_burst, uint16_t nb_pkts, uint64_t *packet_counter);
 uint32_t rte_qdma_get_rx_queue_tail(uint16_t portid, uint16_t q);
+void rte_pmd_qdma_print_wbstatus(uint16_t qid);
 
 #ifdef __cplusplus
 }

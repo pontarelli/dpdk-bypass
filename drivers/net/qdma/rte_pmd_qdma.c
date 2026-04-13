@@ -45,6 +45,8 @@
 #include <rte_ethdev.h>
 #include <rte_alarm.h>
 #include <rte_cycles.h>
+#include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -2084,9 +2086,12 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
   uint16_t wrap = 0;
   //fprintf(stderr, "process %u packets from %u to %u\n", nb_pkts, rxq->rx_tail, (rxq->rx_tail + nb_pkts) % (rxq->nb_rx_desc - 1));
   while (count < nb_pkts) {
-    pkt_length = qdma_ul_get_cmpt_pkt_len(&rxq->cmpt_data[count]);
-    pkt_id = qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
-    wrap = qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);
+    //pkt_length = qdma_ul_get_cmpt_pkt_len(&rxq->cmpt_data[count]);
+	pkt_length = 40;
+    //pkt_id = qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
+	pkt_id = count + rxq->rx_tail;
+    //wrap = qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);
+	wrap = 0;
     if (pkt_length) {
       rxq->stats.pkts++;
       rxq->stats.bytes += pkt_length;
@@ -2147,6 +2152,7 @@ uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mb
   uint32_t total_rx_packets;
   uint32_t entries_to_alloc;
   uint16_t* cidx;
+  static time_t last_print_time = 0;
 #ifdef TEST_64B_DESC_BYPASS
   int bypass_desc_sz_idx = qmda_get_desc_sz_idx(rxq->bypass_desc_sz);
 #endif
@@ -2197,6 +2203,21 @@ uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mb
   else if (c2h_rx_cidx > c2h_rx_pidx)
     nb_pkts_avail = rxq->nb_rx_desc - 1 - c2h_rx_cidx + c2h_rx_pidx;
 
+
+  if (time(NULL) - last_print_time > 5) {
+	fprintf(stderr, "c2h_rx_pidx: %u, c2h_rx_cidx: %u, nb_pkts_avail: %u\n",
+		c2h_rx_pidx, c2h_rx_cidx, nb_pkts_avail);
+  	uint32_t val_l = qdma_reg_read_usr(dev, 0xB020);
+  	uint32_t val_h = qdma_reg_read_usr(dev, 0xB024);
+  	uint64_t rx_pkt = ((uint64_t)val_h << 32) | val_l;
+  	uint32_t rx_pkt2 =
+      qdma_reg_read_usr(dev, 0x512C) - 1; // start from 1 to sync with CMPL id
+	fprintf(stderr, "qdma %u, packet adapter: %lu\n", rx_pkt2, rx_pkt);
+  	uint32_t full_counter = qdma_reg_read_usr(dev, 0x514C);
+
+  	fprintf(stderr, "full_counter: %u\n", full_counter);
+	last_print_time = time(NULL);
+  }
   if (nb_pkts_avail == 0) {
     PMD_DRV_LOG(DEBUG, "%s(): %d: nb_pkts_avail = 0\n", __func__, __LINE__);
     return 0;
@@ -2209,9 +2230,6 @@ uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mb
   if (nb_pkts > nb_pkts_avail)
     nb_pkts = nb_pkts_avail;
 
-	// Debug print
-	//fprintf(stderr, "c2h_rx_pidx: %u, c2h_rx_cidx: %u, nb_pkts_avail: %u\n",
-	//	c2h_rx_pidx, c2h_rx_cidx, nb_pkts_avail);
 
 
 
@@ -2232,10 +2250,11 @@ uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mb
 #ifdef QDMA_LATENCY_OPTIMIZED
   adapt_update_counter(rxq, nb_pkts_avail);
 #endif // QDMA_LATENCY_OPTIMIZED
-  if (process_cmpt_ring(rxq, nb_pkts,rx_cmpt_tail) != 0) {
-    fprintf(stderr, "Error processing completion ring\n");
-    return 0;
-  }
+  // Not required 
+  //if (process_cmpt_ring(rxq, nb_pkts,rx_cmpt_tail) != 0) {
+  //  fprintf(stderr, "Error processing completion ring\n");
+  //  return 0;
+  //}
 
   if (rxq->status != RTE_ETH_QUEUE_STATE_STARTED) {
     PMD_DRV_LOG(DEBUG, "%s(): %d: rxq->status = %d\n", __func__, __LINE__,
@@ -2310,4 +2329,24 @@ uint32_t rte_qdma_get_rx_queue_tail(uint16_t portid, uint16_t q) {
   qdma_dev = dev->data->dev_private;
 
   return rxq->rx_tail;
+}
+
+void rte_pmd_qdma_print_wbstatus(uint16_t qid) {
+	struct rte_eth_dev *dev;
+	struct qdma_pci_dev *qdma_dev;
+	if (qid >= rte_eth_dev_count_avail()) {
+		PMD_DRV_LOG(ERR, "Wrong queue id %d\n", qid);
+		return;
+	}
+	dev = &rte_eth_devices[qid];
+	qdma_dev = dev->data->dev_private;
+	struct qdma_rx_queue *rxq = dev->data->rx_queues[qid];
+	struct wb_status *wb_status = rxq->wb_status;
+	uint16_t cmpt_pidx = wb_status->pidx;
+	uint16_t cmpt_cidx = wb_status->cidx;
+	uint32_t rsvd2 = wb_status->rsvd2;
+	rte_rmb();
+
+	fprintf(stderr, "WB Status for queue id %d: pidx = %d, cidx = %d, rsvd2 = %d\n",
+			qid, cmpt_pidx, cmpt_cidx, rsvd2);
 }

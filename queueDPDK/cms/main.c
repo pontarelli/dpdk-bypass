@@ -77,6 +77,7 @@
 
 #define abs(x) ((x) < 0 ? -(x) : (x))
 
+void rte_pmd_qdma_print_wbstatus(uint16_t qid);
 uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 uint16_t get_cidx(void *rx_queue);
 uint16_t get_cidx_tx(void *tx_queue, bool elastic);
@@ -514,6 +515,7 @@ static void print_stats(void) {
       uint64_t diff_rx = port_stats[portid][q].rx - prev_rx[portid][q];
       uint64_t diff_dropped =
           port_stats[portid][q].dropped - prev_dropped[portid][q];
+      rte_pmd_qdma_print_wbstatus(q);
 
       if (!(diff_tx == 0 && diff_rx == 0 && diff_dropped == 0)) {
 
