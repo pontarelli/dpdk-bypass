@@ -99,6 +99,9 @@ int qdma_write_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint6
 int qdma_write_bypass_reg_pcie_addr(void* dev_hndl, uint64_t pcie_addr);
 int qdma_read_bypass_reg_pcie_addr(void *dev_hndl, uint64_t* pcie_addr);
 
+int qdma_write_bypass_reg_pidx_update_period(void *dev_hndl, uint32_t period);
+int qdma_read_bypass_reg_pidx_update_period(void *dev_hndl, uint32_t *period);
+
 
 int qdma_bypass_clear_counters(void *dev_hndl);
 int qdma_bypass_direct_clear_counters(void *dev_hndl);
@@ -361,7 +364,7 @@ uint64_t prev_cmpl_error = 0;
 uint64_t prev_cmpl_error_seq = 0;
 uint64_t prev_cmpl_error_dup = 0;
 uint32_t miss = 0;
-//uint32_t total = 0;
+uint32_t total = 0;
 //uint16_t sw_pkt_id = 1; /* Global software packet ID (works with 1 queue, used
                           // to detect packet loss */
 //uint32_t sw_debug_id[2048] = {1}; /* software packet ID for each queue, used to detect packet loss */
@@ -1357,12 +1360,21 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               printf("%X ", *(((uint8_t *)phys_addr) -2*2368+ i));
               }
               printf("\n");
+              */
+              //printf("i-esimo:\n");
+              //for (size_t i = 0; i < 32; i++) {
+              //printf("%X ", *(((uint8_t *)phys_addr) +total *2368+ i));
+              //}
+	      //total++;
+              //printf("\n");
+              //printf("i+1-esimo:\n");
+              //for (size_t i = 0; i < 32; i++) {
+              //printf("%X ", *(((uint8_t *)phys_addr) +total *2368+ i));
+              //}
+              //printf("\n");
+	      //printf("phys addr %p\n", phys_addr + total *2368);
 
-              printf("i-esimo:\n");
-              for (size_t i = 0; i < 32; i++) {
-              printf("%X ", *(((uint8_t *)phys_addr) -(total %128)*2368+ i));
-              }
-              printf("\n");
+	      /*
 
               printf("cinquanta:\n");
               for (size_t i = 0; i < 32; i++) {
@@ -2344,7 +2356,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         if (dma_counter == NULL) {
           rte_exit(EXIT_FAILURE, "Failed to allocate DMA memory\n");
         }
-        *dma_counter = 0; // Initialize counter to 0
+        *dma_counter = nb_rxd + 1; // Initialize counter to num desc, which is an invalid value 
         // Get physical address of the allocated memory
         rte_iova_t dma_counter_phys_addr = rte_malloc_virt2iova(dma_counter);
         if (dma_counter_phys_addr == RTE_BAD_IOVA) {
@@ -2361,6 +2373,14 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         fprintf(stderr, "Value read back from device register: 0x%lx\n", reg_val);
         if (reg_val != dma_counter_phys_addr) {
           rte_exit(EXIT_FAILURE, "Mismatch in physical address read back from device\n");
+        }
+        // Write the pidx update period register
+        uint32_t period = 4;
+        qdma_write_bypass_reg_pidx_update_period(dev, period);
+        // Read again for checking
+        qdma_read_bypass_reg_pidx_update_period(dev, &period);
+        if ((period+1) != 4) {
+          rte_exit(EXIT_FAILURE, "Mismatch in pidx update period read back from device: %u\n", period);
         }
       }
 
@@ -2444,6 +2464,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         qdma_write_direct_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
         //qdma_write_queue_bypass_registers(dev, qid, 0x0, 0, 0, 0);
       }
+      // Disable completion entries
+      qdma_write_bypass_reg_enable_cmpt(dev, 0);
+      // Set pidx update period to 1
+      qdma_write_bypass_reg_pidx_update_period(dev, 1);
     }
 
     RTE_ETH_FOREACH_DEV(portid) {

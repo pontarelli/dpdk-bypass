@@ -6752,3 +6752,98 @@ int qdma_read_bypass_reg_pcie_addr(void *dev_hndl, uint64_t *pcie_addr) {
 	*pcie_addr = ((uint64_t)addr_hi << 32) | (uint64_t)addr_lo;
 	return QDMA_SUCCESS;
 }
+
+int qdma_write_bypass_reg_enable_cmpt(void *dev_hndl, uint8_t enable) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_ENABLE_CMPT,
+		(uint32_t)(enable & 0x1));
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_enable_cmpt(void *dev_hndl, uint8_t *enable) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!enable) {
+		qdma_log_error("%s: enable is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*enable = (uint8_t)(qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_ENABLE_CMPT) & 0x1);
+	return QDMA_SUCCESS;
+}
+
+int qdma_write_bypass_reg_pidx_update_period(void *dev_hndl, uint32_t period) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	// Check that period is a power of 2 and within allowed range (1 to 1024)
+	if (period == 0 || period > 1024 || (period & (period - 1)) != 0) {
+		qdma_log_error("%s: period must be a power of 2 between 1 and 1024, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	// Write the period - 1 to the register, in order to have a mask of (period - 1) for the hardware to use
+	qdma_reg_write_usr(dev_hndl,
+		QDMA_BYPASS_REG_PIDX_UPDATE_PERIOD,
+		period - 1);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_pidx_update_period(void *dev_hndl, uint32_t *period) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!period) {
+		qdma_log_error("%s: period is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*period = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_PIDX_UPDATE_PERIOD);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_wr_data_count(void *dev_hndl, uint32_t *wr_data_count) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!wr_data_count) {
+		qdma_log_error("%s: wr_data_count is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*wr_data_count = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_WR_DATA_COUNT);
+	return QDMA_SUCCESS;
+}
+
+int qdma_read_bypass_reg_rd_data_count(void *dev_hndl, uint32_t *rd_data_count) {
+	if (!dev_hndl) {
+		qdma_log_error("%s: dev_handle is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	if (!rd_data_count) {
+		qdma_log_error("%s: rd_data_count is NULL, err:%d\n",
+		 __func__, -QDMA_ERR_INV_PARAM);
+		return -QDMA_ERR_INV_PARAM;
+	}
+	*rd_data_count = qdma_reg_read_usr(dev_hndl,
+		QDMA_BYPASS_REG_RD_DATA_COUNT);
+	return QDMA_SUCCESS;
+}

@@ -319,6 +319,10 @@ int qdma_write_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid,
                                       uint8_t valid, uint32_t num_desc);
 
 int qdma_write_bypass_reg_pcie_addr(void* dev_hndl, uint64_t pcie_addr);
+
+int qdma_write_bypass_reg_enable_cmpt(void* dev_hndl, uint8_t enable);
+int qdma_write_bypass_reg_pidx_update_period(void* dev_hndl, uint32_t period);
+
 int qdma_read_bypass_reg_pcie_addr(void *dev_hndl, uint64_t* addr);
 
 
@@ -342,10 +346,15 @@ int qdma_read_queue_bypass_registers(void *dev_hndl, uint16_t qid,
 									  uint8_t *valid, uint32_t *num_desc);
 
 int qdma_read_direct_queue_bypass_registers(void *dev_hndl, uint16_t qid, uint64_t *addr, uint32_t *tag, uint8_t *valid, uint32_t *num_desc);
+int qdma_read_bypass_reg_enable_cmpt(void *dev_hndl, uint8_t *enable);
+int qdma_read_bypass_reg_pidx_update_period(void *dev_hndl, uint32_t *period);
+int qdma_read_bypass_reg_wr_data_count(void *dev_hndl, uint32_t *wr_data_count);
+int qdma_read_bypass_reg_rd_data_count(void *dev_hndl, uint32_t *rd_data_count);
+
+
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid, uint32_t *tag);
 int qdma_bypass_clear_counters(void *dev_hndl);
 
-void santoddio(void);
 
 
 #ifdef __cplusplus

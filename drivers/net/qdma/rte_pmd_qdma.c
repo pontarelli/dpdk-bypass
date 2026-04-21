@@ -2006,6 +2006,63 @@ static int process_cmpt_ring(struct qdma_rx_queue *rxq,
   return 0;
 }
 
+static struct rte_mbuf *prepare_segmented_packet_full_bypass(struct qdma_rx_queue *rxq,
+                                                 uint16_t pkt_length,
+                                                 uint16_t *tail,
+                                                 uint16_t wrap) {
+  struct rte_mbuf *mb;
+  struct rte_mbuf *first_seg = NULL;
+  struct rte_mbuf *last_seg = NULL;
+  uint16_t id = *tail;
+  uint16_t length;
+  uint16_t rx_buff_size = rxq->rx_buff_size;
+
+  do {
+	// Increase id by 1
+	id++;
+	if (unlikely(id >= (rxq->nb_rx_desc - 1)))
+		id  = 0;
+    mb = rxq->sw_ring[id];
+    //if (mb == NULL) {
+    //  fprintf(stderr, "prepare_segmented_packet: pkt_length %u, id %u, wrap %u\n",
+    //      pkt_length, id, wrap);
+    //  fprintf(stderr, "Rx ring pidx %u, tail %u, cidx %u\n", rxq->q_pidx_info.pidx, rxq->rx_tail, rxq->rx_ring_cidx);
+    //  fprintf(stderr, "prepare_segmented_packet: mb %p\n", (void *)mb);
+    //  exit(1);
+    //}
+    // sal: cambio qui per mantenere i descrittori!
+    length = pkt_length;
+
+    if (pkt_length > rx_buff_size) {
+      rte_pktmbuf_data_len(mb) = rx_buff_size;
+      pkt_length -= rx_buff_size;
+    } else {
+      rte_pktmbuf_data_len(mb) = pkt_length;
+      pkt_length = 0;
+    }
+    rte_mbuf_refcnt_set(mb, 1);
+    if (first_seg == NULL) {
+      first_seg = mb;
+      first_seg->nb_segs = 1;
+      first_seg->pkt_len = length;
+      first_seg->packet_type = 0;
+      first_seg->ol_flags = 0;
+      first_seg->port = rxq->port_id;
+      first_seg->vlan_tci = 0;
+      first_seg->hash.rss = 0;
+    } else {
+      first_seg->nb_segs++;
+      if (last_seg != NULL)
+        last_seg->next = mb;
+    }
+
+    last_seg = mb;
+    mb->next = NULL;
+  } while (pkt_length);
+
+  *tail = id;
+  return first_seg;
+}
 
 static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
                                                  uint16_t pkt_length,
@@ -2076,7 +2133,7 @@ static struct rte_mbuf *prepare_segmented_packet(struct qdma_rx_queue *rxq,
   return first_seg;
 }
 
-static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
+static uint16_t prepare_packets_full_bypass(struct qdma_rx_queue *rxq,
                                 struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
   uint16_t count_pkts = 0;
   struct rte_mbuf *mb;
@@ -2087,7 +2144,7 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
   //fprintf(stderr, "process %u packets from %u to %u\n", nb_pkts, rxq->rx_tail, (rxq->rx_tail + nb_pkts) % (rxq->nb_rx_desc - 1));
   while (count < nb_pkts) {
     //pkt_length = qdma_ul_get_cmpt_pkt_len(&rxq->cmpt_data[count]);
-	pkt_length = 40;
+	pkt_length = 64;
     //pkt_id = qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
 	pkt_id = count + rxq->rx_tail;
     //wrap = qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);
@@ -2095,7 +2152,7 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
     if (pkt_length) {
       rxq->stats.pkts++;
       rxq->stats.bytes += pkt_length;
-      mb = prepare_segmented_packet(rxq, pkt_length, &rxq->rx_tail, wrap);
+      mb = prepare_segmented_packet_full_bypass(rxq, pkt_length, &rxq->rx_tail, wrap);
       
       mb->timesync = pkt_id;
       mb->dynfield1[0] = wrap;
@@ -2106,7 +2163,7 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
   return count_pkts;
 }
 
-static uint16_t prepare_packets_full_bypass(struct qdma_rx_queue *rxq,
+static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
                                 struct rte_mbuf **rx_pkts, uint16_t nb_pkts) {
   uint16_t count_pkts = 0;
   struct rte_mbuf *mb;
@@ -2198,26 +2255,46 @@ uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mb
   // read memory barrier
   rte_rmb();
 
-  if (c2h_rx_cidx < c2h_rx_pidx)
+  // CIDX is the last consumed
+  // PIDX is the last produced
+
+
+  if (c2h_rx_cidx <= c2h_rx_pidx)
     nb_pkts_avail = c2h_rx_pidx - c2h_rx_cidx;
-  else if (c2h_rx_cidx > c2h_rx_pidx)
-    nb_pkts_avail = rxq->nb_rx_desc - 1 - c2h_rx_cidx + c2h_rx_pidx;
+  else 
+    nb_pkts_avail = ((rxq->nb_rx_desc - 2) - c2h_rx_cidx) + c2h_rx_pidx + 1;
 
-
-  if (time(NULL) - last_print_time > 5) {
-	fprintf(stderr, "c2h_rx_pidx: %u, c2h_rx_cidx: %u, nb_pkts_avail: %u\n",
-		c2h_rx_pidx, c2h_rx_cidx, nb_pkts_avail);
-  	uint32_t val_l = qdma_reg_read_usr(dev, 0xB020);
-  	uint32_t val_h = qdma_reg_read_usr(dev, 0xB024);
-  	uint64_t rx_pkt = ((uint64_t)val_h << 32) | val_l;
-  	uint32_t rx_pkt2 =
-      qdma_reg_read_usr(dev, 0x512C) - 1; // start from 1 to sync with CMPL id
-	fprintf(stderr, "qdma %u, packet adapter: %lu\n", rx_pkt2, rx_pkt);
-  	uint32_t full_counter = qdma_reg_read_usr(dev, 0x514C);
-
-  	fprintf(stderr, "full_counter: %u\n", full_counter);
-	last_print_time = time(NULL);
+  // Check if the driver just started -> pidx == nb_desc
+  if (unlikely(c2h_rx_pidx == rxq->nb_rx_desc)) {
+	nb_pkts_avail = 0;
   }
+
+
+//   if (time(NULL) - last_print_time > 5) {
+// 	fprintf(stderr, "c2h_rx_pidx: %u, c2h_rx_cidx: %u, nb_pkts_avail: %u\n",
+// 		c2h_rx_pidx, c2h_rx_cidx, nb_pkts_avail);
+//   	uint32_t val_l = qdma_reg_read_usr(dev, 0xB020);
+//   	uint32_t val_h = qdma_reg_read_usr(dev, 0xB024);
+//   	uint64_t rx_pkt = ((uint64_t)val_h << 32) | val_l;
+//   	uint32_t rx_pkt2 =
+//       qdma_reg_read_usr(dev, 0x512C) - 1; // start from 1 to sync with CMPL id
+// 	fprintf(stderr, "qdma %u, packet adapter: %lu\n", rx_pkt2, rx_pkt);
+//   	uint32_t full_counter = qdma_reg_read_usr(dev, 0x514C);
+
+//   	fprintf(stderr, "full_counter: %u\n", full_counter);
+
+// 	uint32_t status = qdma_reg_read_usr(dev, 0x5158);
+// 	fprintf(stderr, "debug status: 0x%x\n", status);
+// 	fprintf(stderr, "debug status val pidx: %d\n", status & 0x0ffff);
+// 	status = status >>16;
+// 	fprintf(stderr, "debug status qid: %d\n", status & 0x07ff);
+// 	status = status >>11;
+// 	fprintf(stderr, "debug status fifo full : %x\n", status & 0x01);
+// 	status = status >>1;
+// 	fprintf(stderr, "debug status bresp : %x\n", status & 0x03);
+	
+// 	last_print_time = time(NULL);
+//   }
   if (nb_pkts_avail == 0) {
     PMD_DRV_LOG(DEBUG, "%s(): %d: nb_pkts_avail = 0\n", __func__, __LINE__);
     return 0;
@@ -2265,7 +2342,7 @@ uint32_t rte_eth_rx_burst_full_bypass(uint16_t portid, uint16_t q, struct rte_mb
   //if (nb_pkts != 0)
   //  fprintf(stderr, "Processing %u packets\n", nb_pkts);
 
-  count_pkts = prepare_packets(rxq, pkts_burst, nb_pkts);
+  count_pkts = prepare_packets_full_bypass(rxq, pkts_burst, nb_pkts);
   //fprintf(stderr, "Prepared %u packets\n", count_pkts);
 
 

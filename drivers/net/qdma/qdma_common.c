@@ -271,6 +271,10 @@ int qdma_init_rx_queue(struct qdma_rx_queue *rxq)
 	/* initialize tail */
 	rxq->rx_tail = 0;
 
+	if (rxq->en_bypass) {
+		rxq->rx_tail = rxq->nb_rx_desc - 2;
+	} 
+
 	return 0;
 fail:
 	return -ENOMEM;
