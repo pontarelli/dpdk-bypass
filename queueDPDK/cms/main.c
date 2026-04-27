@@ -2374,12 +2374,13 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         if (reg_val != dma_counter_phys_addr) {
           rte_exit(EXIT_FAILURE, "Mismatch in physical address read back from device\n");
         }
+        #define PIDX_UPDATE_PERIOD 1
         // Write the pidx update period register
-        uint32_t period = 4;
+        uint32_t period = PIDX_UPDATE_PERIOD;
         qdma_write_bypass_reg_pidx_update_period(dev, period);
         // Read again for checking
         qdma_read_bypass_reg_pidx_update_period(dev, &period);
-        if ((period+1) != 4) {
+        if ((period+1) != PIDX_UPDATE_PERIOD) {
           rte_exit(EXIT_FAILURE, "Mismatch in pidx update period read back from device: %u\n", period);
         }
       }
