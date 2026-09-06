@@ -414,6 +414,7 @@ enum application_id {
   DECRYPTION = 6,
   MICA = 7,
   NITROSKETCH = 8,
+  MICA_UDP = 9,
 };
 
 // NITROSKETCH
@@ -431,6 +432,20 @@ struct mehcached_table *table;
 
 #define NUM_KEYS 2000
 static int VALUE_SIZE = 256;
+
+// process_mica_udp() wire opcodes: two independent GET/SET pairs, one per
+// key/value size class.
+//   "tiny"  : 8-byte key,  8-byte value
+//   "small" : 16-byte key, 32-byte value
+#define MICA_UDP_OP_GET_TINY 0
+#define MICA_UDP_OP_SET_TINY 1
+#define MICA_UDP_OP_GET_SMALL 2
+#define MICA_UDP_OP_SET_SMALL 3
+
+#define TINY_KEY_SIZE 8
+#define TINY_VALUE_SIZE 8
+#define SMALL_KEY_SIZE 16
+#define SMALL_VALUE_SIZE 32
 
 size_t default_keys[NUM_KEYS];
 int keys_index = 0;
@@ -925,46 +940,51 @@ static void inline process_decryption(struct rte_mbuf *m) {
     payload[i] = payload[i] + decryption_key;
 }
 
-static void inline process_mica(struct rte_mbuf *m) {
-  if (table == NULL) {
-    const size_t umem_size = 512;
-    const size_t page_size = 1048576 * 2;
-    const size_t num_numa_nodes = 1;
-    const size_t num_pages_to_try = umem_size;
-    const size_t num_pages_to_reserve = umem_size - umem_size / 8;
-    size_t alloc_overhead = sizeof(struct mehcached_item);
+static void inline mica_table_init(void) {
+  if (table != NULL)
+    return;
 
-    mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try,
-                       num_pages_to_reserve);
+  const size_t umem_size = 512;
+  const size_t page_size = 1048576 * 2;
+  const size_t num_numa_nodes = 1;
+  const size_t num_pages_to_try = umem_size;
+  const size_t num_pages_to_reserve = umem_size - umem_size / 8;
+  size_t alloc_overhead = sizeof(struct mehcached_item);
 
-    table = &table_o;
-    size_t numa_nodes[] = {(size_t)-1};
-    // mehcached_table_init(table, 1, 1, 256, false, false, false,
-    // numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
-    // Hardcoded 2 instead of numa_nodes[0]
-    mehcached_table_init(
-        table,
-        (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) /
-            MEHCACHED_ITEMS_PER_BUCKET,
-        1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
-        false, false, 0, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
-    assert(table);
+  mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try,
+                     num_pages_to_reserve);
 
-    char default_value[VALUE_SIZE];
-    memset(default_value, 'A', VALUE_SIZE - 1);
-    default_value[VALUE_SIZE - 1] = '\0';
+  table = &table_o;
+  size_t numa_nodes[] = {(size_t)-1};
+  // mehcached_table_init(table, 1, 1, 256, false, false, false,
+  // numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+  // Hardcoded 2 instead of numa_nodes[0]
+  mehcached_table_init(
+      table,
+      (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) /
+          MEHCACHED_ITEMS_PER_BUCKET,
+      1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
+      false, false, 0, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+  assert(table);
 
-    for (size_t i = 0; i < NUM_KEYS; i++) {
-      size_t key = i;
-      default_keys[i] = key;
+  char default_value[VALUE_SIZE];
+  memset(default_value, 'A', VALUE_SIZE - 1);
+  default_value[VALUE_SIZE - 1] = '\0';
 
-      uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
-      if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
-                         (const uint8_t *)&default_value, sizeof(default_value),
-                         0, false))
-        assert(false);
-    }
+  for (size_t i = 0; i < NUM_KEYS; i++) {
+    size_t key = i;
+    default_keys[i] = key;
+
+    uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+    if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
+                       (const uint8_t *)&default_value, sizeof(default_value),
+                       0, false))
+      assert(false);
   }
+}
+
+static void inline process_mica(struct rte_mbuf *m) {
+  mica_table_init();
   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
   if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
     //printf("Not an IPv4 packet %x \n", eth->ether_type);
@@ -1010,6 +1030,122 @@ static void inline process_mica(struct rte_mbuf *m) {
 
     // send acknowledgement
     memcpy((unsigned char *)(tcp + 1) + sizeof(size_t), &value, VALUE_SIZE);
+  }
+}
+
+// Second MICA application: unlike process_mica() above (which alternates
+// GET/SET internally and ignores the packet contents), this one is driven
+// by the packet itself. Two independent GET/SET opcode pairs are supported,
+// one per key/value size class:
+//
+//   "tiny"  : 8-byte key,  8-byte value  -> MICA_UDP_OP_GET_TINY / MICA_UDP_OP_SET_TINY
+//   "small" : 16-byte key, 32-byte value -> MICA_UDP_OP_GET_SMALL / MICA_UDP_OP_SET_SMALL
+//
+// Since the key/value sizes are fixed by the opcode, no length fields are
+// carried on the wire. UDP payload layout:
+//
+//   byte 0                : opcode (one of the 4 above)
+//   bytes 1..KEY_SIZE     : key
+//   bytes ..+VALUE_SIZE   : value (SET only)
+//
+// For a GET request the looked-up value is written back in place right
+// after the key; for a SET request the stored value is echoed back as an
+// acknowledgement, exactly like process_mica() does.
+static void inline process_mica_udp(struct rte_mbuf *m) {
+  mica_table_init();
+
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+    //printf("Not an IPv4 packet %x \n", eth->ether_type);
+    return;
+  }
+  struct iphdr *ip =
+      (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
+  if (ip->protocol != IPPROTO_UDP) {
+    //printf("Not a UDP packet %x \n", ip->protocol);
+    return;
+  }
+  int ip_header_len = ip->ihl * 4;
+  struct rte_udp_hdr *udp =
+      (struct rte_udp_hdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr) +
+                             ip_header_len);
+  unsigned char *payload = (unsigned char *)(udp + 1);
+
+  uint8_t opcode = payload[0];
+  unsigned char *key_ptr = payload + 1;
+
+  switch (opcode) {
+  case MICA_UDP_OP_GET_TINY: {
+    size_t key = 0;
+    memcpy(&key, key_ptr, TINY_KEY_SIZE);
+    uint64_t key_hash = hash((const uint8_t *)&key, TINY_KEY_SIZE);
+
+    char value_tiny[TINY_VALUE_SIZE];
+    size_t value_length = sizeof(value_tiny);
+    if (mehcached_get(0, table, key_hash, (const uint8_t *)&key,
+                      TINY_KEY_SIZE, (uint8_t *)&value_tiny, &value_length,
+                      NULL, false))
+      assert(value_length == sizeof(value_tiny));
+
+    // send value back right after the key
+    memcpy(key_ptr + TINY_KEY_SIZE, value_tiny, TINY_VALUE_SIZE);
+    break;
+  }
+  case MICA_UDP_OP_SET_TINY: {
+    size_t key = 0;
+    memcpy(&key, key_ptr, TINY_KEY_SIZE);
+    uint64_t key_hash = hash((const uint8_t *)&key, TINY_KEY_SIZE);
+
+    unsigned char *val_ptr = key_ptr + TINY_KEY_SIZE;
+    char value_tiny[TINY_VALUE_SIZE];
+    memcpy(value_tiny, val_ptr, TINY_VALUE_SIZE);
+
+    if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key,
+                       TINY_KEY_SIZE, (const uint8_t *)&value_tiny,
+                       TINY_VALUE_SIZE, 0, true))
+      assert(false);
+
+    // send acknowledgement
+    memcpy(val_ptr, value_tiny, TINY_VALUE_SIZE);
+    break;
+  }
+  case MICA_UDP_OP_GET_SMALL: {
+    unsigned char key_small[SMALL_KEY_SIZE];
+    memcpy(key_small, key_ptr, SMALL_KEY_SIZE);
+    uint64_t key_hash = hash((const uint8_t *)key_small, SMALL_KEY_SIZE);
+
+    char value_small[SMALL_VALUE_SIZE];
+    size_t value_length = sizeof(value_small);
+    if (mehcached_get(0, table, key_hash, (const uint8_t *)key_small,
+                      SMALL_KEY_SIZE, (uint8_t *)&value_small, &value_length,
+                      NULL, false))
+      assert(value_length == sizeof(value_small));
+
+    // send value back right after the key
+    memcpy(key_ptr + SMALL_KEY_SIZE, value_small, SMALL_VALUE_SIZE);
+    break;
+  }
+  case MICA_UDP_OP_SET_SMALL: {
+    unsigned char key_small[SMALL_KEY_SIZE];
+    memcpy(key_small, key_ptr, SMALL_KEY_SIZE);
+    uint64_t key_hash = hash((const uint8_t *)key_small, SMALL_KEY_SIZE);
+
+    unsigned char *val_ptr = key_ptr + SMALL_KEY_SIZE;
+    char value_small[SMALL_VALUE_SIZE];
+    memcpy(value_small, val_ptr, SMALL_VALUE_SIZE);
+
+    if (!mehcached_set(0, table, key_hash, (const uint8_t *)key_small,
+                       SMALL_KEY_SIZE, (const uint8_t *)&value_small,
+                       SMALL_VALUE_SIZE, 0, true))
+      assert(false);
+
+    // send acknowledgement
+    memcpy(val_ptr, value_small, SMALL_VALUE_SIZE);
+    break;
+  }
+  default:
+    //printf("Unknown MICA opcode %u\n", opcode);
+    break;
   }
 }
 
@@ -1090,6 +1226,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       break;
     case NITROSKETCH:
       process_nitrosketch(m);
+      break;
+    case MICA_UDP:
+      process_mica_udp(m);
       break;
     default:
       l2_forward(m, 0);
