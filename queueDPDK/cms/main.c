@@ -692,17 +692,35 @@ static void print_stats(void) {
 }
 
 static void mac_updating(struct rte_mbuf *m, unsigned dest_portid) {
-  struct rte_ether_hdr *eth;
+  /*struct rte_ether_hdr *eth;
   void *tmp;
 
   eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
   /* 02:00:00:00:00:xx */
-  tmp = &eth->d_addr.addr_bytes[0];
-  *((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dest_portid << 40);
+  //tmp = &eth->d_addr.addr_bytes[0];
+  //*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dest_portid << 40);
 
   /* src addr */
-  rte_ether_addr_copy(&ports_eth_addr[dest_portid], &eth->s_addr);
+  //rte_ether_addr_copy(&ports_eth_addr[dest_portid], &eth->s_addr);
+  //
+   struct rte_ether_hdr *eth;
+   struct rte_ether_addr tmp;
+
+   eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+   /* Save destination MAC */
+   rte_ether_addr_copy(&eth->d_addr, &tmp);
+
+   /* dst = src */
+   rte_ether_addr_copy(&eth->s_addr, &eth->d_addr);
+
+   /* src = fixed MAC */
+   struct rte_ether_addr new_src = {
+       .addr_bytes = {0x00, 0x0A, 0x35, 0xE8, 0x6F, 0x8E}
+   };
+
+   rte_ether_addr_copy(&new_src, &eth->s_addr);
 }
 
 static void cms_count_add(struct rte_mbuf *m) {
