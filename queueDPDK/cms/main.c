@@ -56,6 +56,7 @@
 #define CMD_LINE_OPT_MAC_UPDATING "mac-updating"
 #define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
 #define CMD_LINE_OPT_PORTMAP_CONFIG "portmap"
+#define CMD_LINE_OPT_MICA_DB_SIZE "mica-db-size"
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90  /* 9s (90 * 100ms) in total */
 
@@ -430,7 +431,12 @@ static CountSketch *nitro_cs;
 struct mehcached_table table_o;
 struct mehcached_table *table;
 
-#define NUM_KEYS 2000
+// Number of distinct keys preloaded into the MICA table at startup (and,
+// for process_mica(), cycled through on every packet). Runtime-configurable
+// via --mica-db-size; see parse_args(). Must match what the traffic
+// generator is told to use (same flag name), otherwise SETs for keys
+// outside this range can fail once the table fills up.
+static uint64_t mica_db_size = 2000;
 static int VALUE_SIZE = 256;
 
 // process_mica_udp() wire opcodes: two independent GET/SET pairs, one per
@@ -447,7 +453,9 @@ static int VALUE_SIZE = 256;
 #define SMALL_KEY_SIZE 16
 #define SMALL_VALUE_SIZE 32
 
-size_t default_keys[NUM_KEYS];
+// Allocated in mica_table_init() once mica_db_size is known (after arg
+// parsing).
+static size_t *default_keys = NULL;
 int keys_index = 0;
 
 bool flag = false;
@@ -972,16 +980,29 @@ static void inline mica_table_init(void) {
   mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try,
                      num_pages_to_reserve);
 
+  default_keys = malloc(mica_db_size * sizeof(size_t));
+  if (default_keys == NULL)
+    rte_exit(EXIT_FAILURE, "Cannot allocate default_keys (mica-db-size=%" PRIu64 ")\n",
+              mica_db_size);
+
   table = &table_o;
   size_t numa_nodes[] = {(size_t)-1};
   // mehcached_table_init(table, 1, 1, 256, false, false, false,
   // numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
   // Hardcoded 2 instead of numa_nodes[0]
+  // MEHCACHED_NO_EVICTION means a bucket that fills up simply rejects new
+  // inserts (mehcached_set() returns false) instead of evicting an older
+  // item. Sizing buckets at ~1 bucket per key (num_buckets ~= mica_db_size,
+  // i.e. average occupancy ~= 1 out of MEHCACHED_ITEMS_PER_BUCKET slots)
+  // keeps the chance of any single bucket overflowing from real hash
+  // collisions negligible, even across the tens of thousands of buckets a
+  // large --mica-db-size produces. Sizing it at (mica_db_size /
+  // MEHCACHED_ITEMS_PER_BUCKET), i.e. banking on a perfectly uniform hash
+  // to fill every bucket to capacity, is not safe: at that load factor a
+  // preload of 100000 sequential keys reliably overflows some bucket.
   mehcached_table_init(
-      table,
-      (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) /
-          MEHCACHED_ITEMS_PER_BUCKET,
-      1, NUM_KEYS * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
+      table, mica_db_size,
+      1, mica_db_size * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
       false, false, 0, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
   assert(table);
 
@@ -989,7 +1010,7 @@ static void inline mica_table_init(void) {
   memset(default_value, 'A', VALUE_SIZE - 1);
   default_value[VALUE_SIZE - 1] = '\0';
 
-  for (size_t i = 0; i < NUM_KEYS; i++) {
+  for (size_t i = 0; i < mica_db_size; i++) {
     size_t key = i;
     default_keys[i] = key;
 
@@ -997,7 +1018,7 @@ static void inline mica_table_init(void) {
     if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
                        (const uint8_t *)&default_value, sizeof(default_value),
                        0, false))
-      assert(false);
+      fprintf(stderr, "mica_table_init: failed to preload key %zu (bucket full)\n", key);
   }
 }
 
@@ -1022,7 +1043,7 @@ static void inline process_mica(struct rte_mbuf *m) {
   memcpy(&key, tcp, sizeof(size_t));
   flag = !flag;
   key = default_keys[keys_index];
-  keys_index = (keys_index + 1) % NUM_KEYS;
+  keys_index = (keys_index + 1) % mica_db_size;
 
   // GET
   if (flag) {
@@ -1044,7 +1065,7 @@ static void inline process_mica(struct rte_mbuf *m) {
     uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
     if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key),
                        (const uint8_t *)&value, sizeof(value), 0, true))
-      assert(false);
+      fprintf(stderr, "process_mica: SET failed for key %zu (bucket full)\n", key);
 
     // send acknowledgement
     memcpy((unsigned char *)(tcp + 1) + sizeof(size_t), &value, VALUE_SIZE);
@@ -1106,6 +1127,7 @@ static void inline process_mica_udp(struct rte_mbuf *m) {
       assert(value_length == sizeof(value_tiny));
 
     // send value back right after the key
+    //printf("GET TINY: key %zu, value %.*s\n",key,TINY_VALUE_SIZE,value_tiny);
     memcpy(key_ptr + TINY_KEY_SIZE, value_tiny, TINY_VALUE_SIZE);
     break;
   }
@@ -1118,12 +1140,16 @@ static void inline process_mica_udp(struct rte_mbuf *m) {
     char value_tiny[TINY_VALUE_SIZE];
     memcpy(value_tiny, val_ptr, TINY_VALUE_SIZE);
 
-    if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key,
-                       TINY_KEY_SIZE, (const uint8_t *)&value_tiny,
-                       TINY_VALUE_SIZE, 0, true))
-      assert(false);
+    // A failed insert (bucket full -- see mica_table_init()) just means
+    // this SET didn't take; still ack with the value the client sent so
+    // one bad request doesn't take down the whole server (no assert here,
+    // this runs per-packet).
+    mehcached_set(0, table, key_hash, (const uint8_t *)&key,
+                 TINY_KEY_SIZE, (const uint8_t *)&value_tiny,
+                 TINY_VALUE_SIZE, 0, true);
 
     // send acknowledgement
+    //printf("SET TINY: key %zu, value %.*s\n",key,(int)TINY_VALUE_SIZE,value_tiny);
     memcpy(val_ptr, value_tiny, TINY_VALUE_SIZE);
     break;
   }
@@ -1140,6 +1166,7 @@ static void inline process_mica_udp(struct rte_mbuf *m) {
       assert(value_length == sizeof(value_small));
 
     // send value back right after the key
+    //printf("GET SMALL: key %.*s, value %.*s\n",SMALL_KEY_SIZE,key_small,SMALL_VALUE_SIZE,value_small);
     memcpy(key_ptr + SMALL_KEY_SIZE, value_small, SMALL_VALUE_SIZE);
     break;
   }
@@ -1152,12 +1179,14 @@ static void inline process_mica_udp(struct rte_mbuf *m) {
     char value_small[SMALL_VALUE_SIZE];
     memcpy(value_small, val_ptr, SMALL_VALUE_SIZE);
 
-    if (!mehcached_set(0, table, key_hash, (const uint8_t *)key_small,
-                       SMALL_KEY_SIZE, (const uint8_t *)&value_small,
-                       SMALL_VALUE_SIZE, 0, true))
-      assert(false);
+    // See MICA_UDP_OP_SET_TINY above: don't crash the server on a failed
+    // insert, just ack with whatever the client sent.
+    mehcached_set(0, table, key_hash, (const uint8_t *)key_small,
+                 SMALL_KEY_SIZE, (const uint8_t *)&value_small,
+                 SMALL_VALUE_SIZE, 0, true);
 
     // send acknowledgement
+    //printf("SET SMALL: key %.*s, value %.*s\n",SMALL_KEY_SIZE,key_small,SMALL_VALUE_SIZE,value_small);
     memcpy(val_ptr, value_small, SMALL_VALUE_SIZE);
     break;
   }
@@ -1621,7 +1650,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         "       - The destination MAC address is replaced by "
         "02:00:00:00:00:TX_PORT_ID\n"
         "  --portmap: Configure forwarding port pair mapping\n"
-        "	      Default: alternate port pairs\n\n",
+        "	      Default: alternate port pairs\n"
+        "  --mica-db-size N: number of distinct keys preloaded into the MICA "
+        "table (default 2000, must match the traffic generator's "
+        "--mica-db-size)\n\n",
         prgname);
   }
 
@@ -1726,12 +1758,14 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
      * conflict with short options */
     CMD_LINE_OPT_MIN_NUM = 256,
     CMD_LINE_OPT_PORTMAP_NUM,
+    CMD_LINE_OPT_MICA_DB_SIZE_NUM,
   };
 
   static const struct option lgopts[] = {
       {CMD_LINE_OPT_MAC_UPDATING, no_argument, &mac_updating_flag, 1},
       {CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating_flag, 0},
       {CMD_LINE_OPT_PORTMAP_CONFIG, 1, 0, CMD_LINE_OPT_PORTMAP_NUM},
+      {CMD_LINE_OPT_MICA_DB_SIZE, required_argument, 0, CMD_LINE_OPT_MICA_DB_SIZE_NUM},
       {NULL, 0, 0, 0}};
 
   /* Parse the argument given in the command line of the application */
@@ -1857,6 +1891,17 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           return -1;
         }
         break;
+      case CMD_LINE_OPT_MICA_DB_SIZE_NUM: {
+        char *end = NULL;
+        unsigned long long v = strtoull(optarg, &end, 10);
+        if (optarg[0] == '\0' || end == NULL || *end != '\0' || v < 2) {
+          fprintf(stderr, "invalid --mica-db-size '%s' (expected >= 2)\n", optarg);
+          usage(prgname);
+          return -1;
+        }
+        mica_db_size = (uint64_t)v;
+        break;
+      }
 
       default:
         usage(prgname);
@@ -2092,6 +2137,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       rte_exit(EXIT_FAILURE, "Invalid arguments\n");
 
     printf("MAC updating %s\n", mac_updating_flag ? "enabled" : "disabled");
+    if (application == MICA || application == MICA_UDP)
+      printf("MICA db size: %" PRIu64 " keys\n", mica_db_size);
 
     /* convert to number of cycles */
     timer_period *= rte_get_timer_hz();
