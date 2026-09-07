@@ -207,7 +207,7 @@ run_matrix() {
     echo "set -u"
     echo "cd '$GEN_DIR' || exit 1"
     echo "echo '=== PRIMING (${prime_seconds}s, discarded) ==='"
-    prime_cmd="sudo timeout --signal=INT ${prime_seconds}s ./build/packetgenmica -q -a $GEN_PCI -- --mica-size tiny --mica-get-pct 50 --mica-zipf-theta 0.8 --mica-db-size ${db_size} --tx-cores ${TX_CORES} --range"
+    prime_cmd="sudo timeout --signal=INT ${prime_seconds}s ./build/packetgenmica -a $GEN_PCI -- --mica-size tiny --mica-get-pct 50 --mica-zipf-theta 0.8 --mica-db-size ${db_size} --tx-cores ${TX_CORES} --range -q"
     echo "echo 'CMD: $prime_cmd'"
     echo "$prime_cmd"
     echo "sleep 1"
