@@ -972,7 +972,7 @@ static void inline mica_table_init(void) {
 
   const size_t umem_size = 512;
   const size_t page_size = 1048576 * 2;
-  const size_t num_numa_nodes = 1;
+  const size_t num_numa_nodes = 8;
   const size_t num_pages_to_try = umem_size;
   const size_t num_pages_to_reserve = umem_size - umem_size / 8;
   size_t alloc_overhead = sizeof(struct mehcached_item);
@@ -1000,9 +1000,33 @@ static void inline mica_table_init(void) {
   // MEHCACHED_ITEMS_PER_BUCKET), i.e. banking on a perfectly uniform hash
   // to fill every bucket to capacity, is not safe: at that load factor a
   // preload of 100000 sequential keys reliably overflows some bucket.
+  // Log/data-area size: must fit mica_db_size items each holding a
+  // sizeof(size_t)-byte key and a VALUE_SIZE-byte value -- that's exactly
+  // what the preload loop below writes for every one of the mica_db_size
+  // keys. The previous formula assumed an 8-byte value (mica_db_size *
+  // (alloc_overhead + 8 + 8)), i.e. ~32x too small versus the real
+  // VALUE_SIZE=256 preload payload: the log-structured allocator ran out
+  // of space partway through preloading (observed: "bucket full" -- really
+  // "log full", mehcached_set() returns false either way -- starting
+  // around key ~mica_db_size * 0.14, consistent with that ~32x undersize)
+  // and every subsequent key failed to preload. Runtime SET traffic from
+  // process_mica_udp() writes smaller values (tiny/small, 8-32B) than this
+  // 256B preload, so sizing for the preload gives it headroom too.
+  //
+  // Per-item bytes actually consumed in the log = sizeof(struct
+  // mehcached_item) + the key/value themselves (already 8-byte aligned
+  // here) + MEHCAHCED_DYNAMIC_OVERHEAD (alloc_dynamic.h: 16 bytes of
+  // chunk header/footer the allocator adds on top of what we ask for).
+  // Missing that 16-byte allocator overhead is exactly what left the
+  // first fixed formula ~3.5% short (e.g. 100000 keys -> failures
+  // starting around key ~96580 instead of all 100000 succeeding). A
+  // further 10% fudge factor covers the allocator's free-list size-class
+  // rounding, which isn't accounted for at all above.
+  size_t mica_log_item_size =
+      alloc_overhead + sizeof(size_t) + (size_t)VALUE_SIZE + 16 /* MEHCAHCED_DYNAMIC_OVERHEAD */;
   mehcached_table_init(
       table, mica_db_size,
-      1, mica_db_size * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false,
+      1, (size_t)(mica_db_size * mica_log_item_size * 1.10), false,
       false, false, 0, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
   assert(table);
 
