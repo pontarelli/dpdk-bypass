@@ -82,7 +82,7 @@ SIZES=(tiny small)
 GET_PCTS=(50 95)
 #ZIPFS=(0.8 0.99)
 ZIPFS=(0.99)
-BYPASS_MODES=(no yes)   # dol without / with -B
+BYPASS_MODES=(yes no)   # dol without / with -B
 
 # Server and generator must agree on the size of the MICA key space: the
 # server preloads exactly this many keys (0..db_size-1) at startup
@@ -95,7 +95,8 @@ BYPASS_MODES=(no yes)   # dol without / with -B
 # --mica-db-size is a startup-only flag on dol (the table is sized and
 # preloaded once in mica_table_init()), so each value here means a full
 # server restart, same as BYPASS_MODES below.
-DB_SIZES=(1000000 5000000 10000000)
+#DB_SIZES=(1000000 5000000 10000000)
+DB_SIZES=(10000000)
 
 # Priming duration scales with db_size: mica_table_init()'s preload is a
 # synchronous loop of db_size sequential mehcached_set() calls, run inline
@@ -220,7 +221,7 @@ run_matrix() {
           # a fixed window and exit by itself, so we just run it in the
           # foreground and this generated script naturally waits for it
           # before moving on to the next combination's "echo" line.
-          combo_cmd="sudo ./build/packetgenmica -q -a $GEN_PCI -- --mica-size ${size} --mica-get-pct ${pct} --mica-zipf-theta ${theta} --mica-db-size ${db_size} --tx-cores ${TX_CORES} --range --test"
+          combo_cmd="sudo ./build/packetgenmica -a $GEN_PCI -- --mica-size ${size} --mica-get-pct ${pct} --mica-zipf-theta ${theta} --mica-db-size ${db_size} --tx-cores ${TX_CORES} --range --test -q"
           echo "echo 'CMD: $combo_cmd'"
           echo "$combo_cmd"
           echo "echo '=== END ${tag} ==='"

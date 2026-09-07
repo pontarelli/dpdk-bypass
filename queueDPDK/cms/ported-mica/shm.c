@@ -486,7 +486,7 @@ mehcached_shm_schedule_remove(size_t entry_id)
 
 	if (mehcached_shm_entries[entry_id].pages == NULL)
 	{
-		printf("invalid entry\n");
+		printf("revome: invalid entry\n");
 		mehcached_shm_unlock();
 		return false;
 	}
@@ -518,7 +518,7 @@ mehcached_shm_map(size_t entry_id, void *ptr, size_t offset, size_t length)
 	// check entry
 	if (mehcached_shm_entries[entry_id].pages == NULL)
 	{
-		printf("invalid entry\n");
+		printf("map: invalid entry\n");
 		mehcached_shm_unlock();
 		return false;
 	}

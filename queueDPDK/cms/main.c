@@ -970,12 +970,74 @@ static void inline mica_table_init(void) {
   if (table != NULL)
     return;
 
-  const size_t umem_size = 512;
   const size_t page_size = 1048576 * 2;
   const size_t num_numa_nodes = 8;
+  size_t alloc_overhead = sizeof(struct mehcached_item);
+
+  // Log/data-area bytes needed: mica_db_size items, each holding a
+  // sizeof(size_t)-byte key + VALUE_SIZE-byte value (see the preload loop
+  // below) plus the dynamic allocator's own per-item overhead
+  // (MEHCAHCED_DYNAMIC_OVERHEAD, alloc_dynamic.h) -- same formula used for
+  // the pool_size argument to mehcached_table_init() further down.
+  size_t mica_log_item_size = alloc_overhead + sizeof(size_t) +
+                              (size_t)VALUE_SIZE +
+                              16 /* MEHCAHCED_DYNAMIC_OVERHEAD */;
+  size_t mica_log_bytes = (size_t)(mica_db_size * mica_log_item_size * 1.10);
+
+  // Bucket-area bytes needed: mehcached_table_init() rounds num_buckets up
+  // to the next power of two and adds 10% extra_buckets on top (see
+  // ported-mica/table.c) -- mirror that here so the shared-memory arena
+  // below is actually sized to fit them. This used to be a FIXED 512 pages
+  // (~896MB) regardless of --mica-db-size, which silently failed
+  // mehcached_shm_alloc() ("insufficient memory on numa node...") for any
+  // db size whose bucket+log data didn't fit (~4.25GB needed for 10000000
+  // keys, for example). Worse, since -DNDEBUG turns the assert(false) that
+  // used to catch that failure into a no-op, execution continued with an
+  // invalid (SIZE_MAX) shm_id, straight into undefined behavior
+  // (out-of-bounds mehcached_shm_entries[] access) -- surfacing as the
+  // "invalid entry" prints from mehcached_shm_map()/schedule_remove().
+  size_t mica_num_buckets = 1;
+  while (mica_num_buckets < mica_db_size)
+    mica_num_buckets <<= 1;
+  size_t mica_bucket_bytes = (mica_num_buckets + mica_num_buckets / 10) *
+                             sizeof(struct mehcached_bucket);
+
+  // Total arena in 2MB pages, with the same 1/8 reserve-margin ratio the
+  // original fixed sizing used, plus a small fixed safety pad, floored at
+  // the original 512-page (~896MB) default so small/default --mica-db-size
+  // values keep at least the same headroom as before.
+  size_t mica_arena_pages =
+      (mica_bucket_bytes + mica_log_bytes + page_size - 1) / page_size;
+  mica_arena_pages += mica_arena_pages / 8 + 64;
+  const size_t needed_pages = RTE_MAX((size_t)512, mica_arena_pages);
+
+  // mehcached_shm_init() below splits num_pages_to_reserve *evenly across
+  // all num_numa_nodes NUMA nodes* (see the per-node quota in
+  // ported-mica/shm.c), but the bucket array and log/pool below are both
+  // allocated on a single hardcoded NUMA node (table_numa_node=0 in the
+  // mehcached_table_init() call further down). That means only 1/num_numa_nodes
+  // of whatever we ask for here ever lands on the node we actually use --
+  // silently capping real usable memory to ~needed_pages/num_numa_nodes
+  // regardless of --mica-db-size. This is what let mica-db-size=100000
+  // work (needed bytes happened to fit in that 1/num_numa_nodes share) while
+  // mica-db-size=1000000 failed with "insufficient memory on numa node 0"
+  // (swallowed by -DNDEBUG into the "invalid entry" prints from
+  // mehcached_shm_map()/schedule_remove()). Inflate the request so node 0's
+  // eventual 1/num_numa_nodes share is still >= needed_pages.
+  const size_t umem_size = (needed_pages * num_numa_nodes * 8 + 6) / 7;
   const size_t num_pages_to_try = umem_size;
   const size_t num_pages_to_reserve = umem_size - umem_size / 8;
-  size_t alloc_overhead = sizeof(struct mehcached_item);
+
+  // MEHCACHED_SHM_MAX_PAGES in ported-mica/shm.c -- mehcached_shm_init()
+  // asserts num_pages_to_try against it; fail loudly here instead of
+  // hitting that assert (a no-op under -DNDEBUG, which would silently
+  // continue with an under-sized/uninitialized arena).
+  const size_t mehcached_shm_max_pages = 65536;
+  if (num_pages_to_try > mehcached_shm_max_pages)
+    rte_exit(EXIT_FAILURE,
+              "mica-db-size=%" PRIu64 " needs %zu 2MB pages, which exceeds "
+              "MEHCACHED_SHM_MAX_PAGES (%zu); reduce --mica-db-size\n",
+              mica_db_size, num_pages_to_try, mehcached_shm_max_pages);
 
   mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try,
                      num_pages_to_reserve);
@@ -1021,12 +1083,12 @@ static void inline mica_table_init(void) {
   // first fixed formula ~3.5% short (e.g. 100000 keys -> failures
   // starting around key ~96580 instead of all 100000 succeeding). A
   // further 10% fudge factor covers the allocator's free-list size-class
-  // rounding, which isn't accounted for at all above.
-  size_t mica_log_item_size =
-      alloc_overhead + sizeof(size_t) + (size_t)VALUE_SIZE + 16 /* MEHCAHCED_DYNAMIC_OVERHEAD */;
+  // rounding, which isn't accounted for at all above. (mica_log_item_size
+  // / mica_log_bytes are computed above, before mehcached_shm_init(), so
+  // the arena can be sized to fit this same pool_size.)
   mehcached_table_init(
       table, mica_db_size,
-      1, (size_t)(mica_db_size * mica_log_item_size * 1.10), false,
+      1, mica_log_bytes, false,
       false, false, 0, numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
   assert(table);
 
@@ -2108,6 +2170,11 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGQUIT, signal_handler);
+    // A terminal disconnect (SSH drop, closed session) sends SIGHUP with
+    // no handler installed by default -- the process dies instantly with
+    // zero cleanup (no bypass-register disarm, no dev_close). Treat it
+    // the same as SIGINT/SIGTERM.
+    signal(SIGHUP, signal_handler);
 
     rte_srand((unsigned)time(NULL));
 
@@ -2656,7 +2723,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       ret = rte_eth_dev_stop(portid);
       if (ret != 0)
         printf("rte_eth_dev_stop: err=%d, port=%d\n", ret, portid);
-      // rte_eth_dev_close(portid);
+      rte_eth_dev_close(portid);
       printf(" Done\n");
     }
     printf("Bye...\n");
@@ -2671,6 +2738,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     }
     rte_free(cm->values);
     rte_free(cm);
+
+    /* Release EAL/VFIO/hugepage state (never called before this fix) so the
+     * QDMA device is fully quiesced before the process exits. */
+    rte_eal_cleanup();
 
     return ret;
   }
