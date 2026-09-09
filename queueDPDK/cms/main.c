@@ -12,6 +12,7 @@
 #include "nitrosketch/xxhash.h"
 #include "ported-mica/hash.h"
 #include "ported-mica/mehcached.h"
+#include "r2p2_glue.h"
 #include "rte_ethdev_driver.h"
 #include "rte_pmd_qdma.h"
 #include "xxhash64.h"
@@ -57,6 +58,8 @@
 #define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
 #define CMD_LINE_OPT_PORTMAP_CONFIG "portmap"
 #define CMD_LINE_OPT_MICA_DB_SIZE "mica-db-size"
+#define CMD_LINE_OPT_R2P2_IP "r2p2-ip"
+#define CMD_LINE_OPT_R2P2_PORT "r2p2-port"
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90  /* 9s (90 * 100ms) in total */
 
@@ -416,6 +419,8 @@ enum application_id {
   MICA = 7,
   NITROSKETCH = 8,
   MICA_UDP = 9,
+  R2P2_ECHO = 10,
+  R2P2_STSS = 11,
 };
 
 // NITROSKETCH
@@ -438,6 +443,22 @@ struct mehcached_table *table;
 // outside this range can fail once the table fills up.
 static uint64_t mica_db_size = 2000;
 static int VALUE_SIZE = 256;
+
+// R2P2 (applications R2P2_ECHO=10, R2P2_STSS=11): local IP/port r2p2's
+// protocol core reports to peers as its own address, so replies carry the
+// right source IP:port. Configured via --r2p2-ip/--r2p2-port; see
+// parse_args(). Stored already in network byte order (inet_addr()/htons())
+// since that's the byte order process_r2p2() uses throughout for
+// r2p2_host_tuple fields (matching the convention of r2p2's own DPDK
+// backend).
+static uint32_t r2p2_local_ip_be;
+static uint16_t r2p2_local_port_be;
+// Which port/queue the packet main_loop() is currently handing to
+// process_packet() arrived on/should be replied on; __thread (not a
+// plain global) because multiple lcores run main_loop() concurrently,
+// each on its own port/queue. Set right before process_packet(m) below.
+static __thread uint16_t r2p2_tx_portid;
+static __thread uint16_t r2p2_tx_queue;
 
 // process_mica_udp() wire opcodes: two independent GET/SET pairs, one per
 // key/value size class.
@@ -1282,6 +1303,47 @@ static void inline process_mica_udp(struct rte_mbuf *m) {
   }
 }
 
+// R2P2 (application ids 10=R2P2_ECHO, 11=R2P2_STSS): parses Eth/IPv4/UDP
+// exactly like cms_count_add()/process_mica_udp() above, then hands the
+// UDP payload to r2p2's own protocol core (r2p2/r2p2/r2p2-common.c,
+// vendored unmodified) via handle_incoming_pck(). That core takes care of
+// request reassembly/ACKs and, once a full request is in, calls whichever
+// recv callback main() registered for the selected application
+// (r2p2_glue_echo_recv() or r2p2_glue_stss_recv() -- see r2p2_glue.{h,c}).
+// Both applications share this same parsing function: the only
+// difference between them is which callback was registered.
+static void inline process_r2p2(struct rte_mbuf *m) {
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
+    return;
+
+  struct iphdr *ip = (struct iphdr *)(eth + 1);
+  if (ip->protocol != IPPROTO_UDP)
+    return;
+
+  int ip_header_len = ip->ihl * 4;
+  struct rte_udp_hdr *udp =
+      (struct rte_udp_hdr *)((uint8_t *)ip + ip_header_len);
+  if (udp->dst_port != r2p2_local_port_be)
+    return;
+
+  int udp_len = rte_be_to_cpu_16(udp->dgram_len);
+  if (udp_len < (int)sizeof(struct rte_udp_hdr))
+    return;
+
+  r2p2_glue_prep_rx(m, sizeof(struct rte_ether_hdr), ip_header_len,
+                    sizeof(struct rte_udp_hdr));
+  r2p2_glue_on_request(r2p2_tx_portid, r2p2_tx_queue, pktmbuf_pool[r2p2_tx_queue],
+                       ip->saddr, &eth->s_addr);
+
+  struct r2p2_host_tuple source = {.ip = ip->saddr, .port = udp->src_port};
+  struct r2p2_host_tuple local = {.ip = r2p2_local_ip_be,
+                                  .port = r2p2_local_port_be};
+
+  handle_incoming_pck((generic_buffer)m, udp_len - sizeof(struct rte_udp_hdr),
+                      &source, &local);
+}
+
 static void inline process_nitrosketch(struct rte_mbuf *m) {
   // NitroSketch: DS init
   static uint64_t pkt_count = 0;
@@ -1363,6 +1425,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     case MICA_UDP:
       process_mica_udp(m);
       break;
+    case R2P2_ECHO:
+    case R2P2_STSS:
+      process_r2p2(m);
+      break;
     default:
       l2_forward(m, 0);
       break;
@@ -1405,6 +1471,11 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     }
 
     uint16_t pktid_prev = 255;
+
+    // r2p2's client_pairs/server_pairs pools are __thread (per-lcore); must
+    // be allocated once on every lcore that will run process_r2p2().
+    if (application == R2P2_ECHO || application == R2P2_STSS)
+      r2p2_glue_init_per_core();
 
     while (!force_quit) {
       // if (total >300) {
@@ -1660,6 +1731,13 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
               pcap_write_packet(pkt_data, pkt_len);
             }
 
+            // R2P2 replies are sent on their own (buf_list_send(), see
+            // r2p2_glue.c), independently of this loop's bypass/retransmit
+            // handling below -- it needs to know which port/queue to send
+            // on, which process_packet(m)'s single-mbuf signature doesn't
+            // carry. Harmless to set for every other application too.
+            r2p2_tx_portid = (uint16_t)portid;
+            r2p2_tx_queue = (uint16_t)q;
             process_packet(m);
 
             if ((!bypass) && (!retransmit)) {
@@ -1845,6 +1923,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     CMD_LINE_OPT_MIN_NUM = 256,
     CMD_LINE_OPT_PORTMAP_NUM,
     CMD_LINE_OPT_MICA_DB_SIZE_NUM,
+    CMD_LINE_OPT_R2P2_IP_NUM,
+    CMD_LINE_OPT_R2P2_PORT_NUM,
   };
 
   static const struct option lgopts[] = {
@@ -1852,6 +1932,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       {CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating_flag, 0},
       {CMD_LINE_OPT_PORTMAP_CONFIG, 1, 0, CMD_LINE_OPT_PORTMAP_NUM},
       {CMD_LINE_OPT_MICA_DB_SIZE, required_argument, 0, CMD_LINE_OPT_MICA_DB_SIZE_NUM},
+      {CMD_LINE_OPT_R2P2_IP, required_argument, 0, CMD_LINE_OPT_R2P2_IP_NUM},
+      {CMD_LINE_OPT_R2P2_PORT, required_argument, 0, CMD_LINE_OPT_R2P2_PORT_NUM},
       {NULL, 0, 0, 0}};
 
   /* Parse the argument given in the command line of the application */
@@ -1871,7 +1953,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       case 'a':
         application = parse_n(optarg);
         /* check application type*/
-        if (application < 0 || application > 9) {
+        if (application < 0 || application > 11) {
           printf("invalid application type\n");
           usage(prgname);
           return -1;
@@ -1986,6 +2068,27 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           return -1;
         }
         mica_db_size = (uint64_t)v;
+        break;
+      }
+      case CMD_LINE_OPT_R2P2_IP_NUM: {
+        struct in_addr addr;
+        if (inet_aton(optarg, &addr) == 0) {
+          fprintf(stderr, "invalid --r2p2-ip '%s'\n", optarg);
+          usage(prgname);
+          return -1;
+        }
+        r2p2_local_ip_be = addr.s_addr;
+        break;
+      }
+      case CMD_LINE_OPT_R2P2_PORT_NUM: {
+        char *end = NULL;
+        unsigned long v = strtoul(optarg, &end, 10);
+        if (optarg[0] == '\0' || end == NULL || *end != '\0' || v == 0 || v > 65535) {
+          fprintf(stderr, "invalid --r2p2-port '%s' (expected 1-65535)\n", optarg);
+          usage(prgname);
+          return -1;
+        }
+        r2p2_local_port_be = rte_cpu_to_be_16((uint16_t)v);
         break;
       }
 
@@ -2668,6 +2771,15 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     }
 
     check_all_ports_link_status(enabled_port_mask);
+
+    if (application == R2P2_ECHO || application == R2P2_STSS) {
+      // ports_eth_addr[0] is only populated by the per-port init loop
+      // above (rte_eth_macaddr_get()), so this can't run any earlier.
+      r2p2_glue_global_init(r2p2_local_ip_be, r2p2_local_port_be,
+                            &ports_eth_addr[0]);
+      r2p2_set_recv_cb(application == R2P2_ECHO ? r2p2_glue_echo_recv
+                                                 : r2p2_glue_stss_recv);
+    }
 
     /* Initialize PCAP file for packet capture */
     if (dump)
