@@ -851,7 +851,7 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
       udp->source = rep->port;
       memcpy(eth->s_addr.addr_bytes, rep->mac_addr, sizeof(eth->s_addr));
     }
-    printf("Existing session found, applying stored mapping\n");
+    //printf("Existing session found, applying stored mapping\n");
     return;
   }
 
@@ -863,13 +863,13 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   char dst_ip_str[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &sid.saddr, src_ip_str, INET_ADDRSTRLEN);
   inet_ntop(AF_INET, &sid.daddr, dst_ip_str, INET_ADDRSTRLEN);
-  printf("New session: %s:%d -> %s:%d (proto: %d)\n", src_ip_str, ntohs(sid.sport), dst_ip_str, ntohs(sid.dport), sid.proto);
+  //printf("New session: %s:%d -> %s:%d (proto: %d)\n", src_ip_str, ntohs(sid.sport), dst_ip_str, ntohs(sid.dport), sid.proto);
   struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
   if (!srvinfo) {
     printf("ERROR: missing service --> DROPPING\n");
     return;
   }
-  printf("Service found\n");
+  //printf("Service found\n");
 
   struct backend_id bkdid = {
       .service = srvid,
@@ -2290,7 +2290,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     /* Populate services hashmap with a dummy entry */
     struct service_id dummy_service_id = {0};
     struct service_info dummy_service_info = {0};
-    dummy_service_id.proto = 0; // UDP
+    dummy_service_id.proto = IPPROTO_UDP; // UDP (17), not 0
     dummy_service_id.vaddr = inet_addr("10.129.2.121");
     dummy_service_id.vport = htons(80);
     dummy_service_info.backends = 1;
