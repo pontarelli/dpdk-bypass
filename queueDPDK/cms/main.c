@@ -822,14 +822,14 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
   // Check if this is a IP packet
   if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-    //printf("Not an IPv4 packet %x \n", eth->ether_type);
+    printf("Not an IPv4 packet %x \n", eth->ether_type);
       return;
   }
 
-  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr));
+  struct iphdr *ip = (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
   struct udphdr *udp =
-      (struct udphdr *)(eth + sizeof(struct rte_ether_hdr) + ip_header_len);
+      (struct udphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr) + ip_header_len);
 
   struct session_id sid = {0};
   sid.saddr = ip->saddr;
@@ -851,7 +851,7 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
       udp->source = rep->port;
       memcpy(eth->s_addr.addr_bytes, rep->mac_addr, sizeof(eth->s_addr));
     }
-    //printf("Existing session found, applying stored mapping\n");
+    printf("Existing session found, applying stored mapping\n");
     return;
   }
 
@@ -863,13 +863,13 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   char dst_ip_str[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &sid.saddr, src_ip_str, INET_ADDRSTRLEN);
   inet_ntop(AF_INET, &sid.daddr, dst_ip_str, INET_ADDRSTRLEN);
-  //printf("New session: %s:%d -> %s:%d (proto: %d)\n", src_ip_str, ntohs(sid.sport), dst_ip_str, ntohs(sid.dport), sid.proto);
+  printf("New session: %s:%d -> %s:%d (proto: %d)\n", src_ip_str, ntohs(sid.sport), dst_ip_str, ntohs(sid.dport), sid.proto);
   struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
   if (!srvinfo) {
-    //printf("ERROR: missing service --> DROPPING\n");
+    printf("ERROR: missing service --> DROPPING\n");
     return;
   }
-  //printf("Service found\n");
+  printf("Service found\n");
 
   struct backend_id bkdid = {
       .service = srvid,
@@ -880,7 +880,7 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
 
   if (!bkdinfo) {
-    //printf("ERROR: missing backend --> DROPPING\n");
+    printf("ERROR: missing backend --> DROPPING\n");
     return;
   }
 
@@ -893,7 +893,7 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   memcpy(fwd_rep.mac_addr, &bkdinfo->mac_addr, sizeof(fwd_rep.mac_addr));
   rep = &fwd_rep;
   if (hashmap_insert_elem(&active_sessions, &sid, &fwd_rep) != 1) {
-    fprintf(stderr, "ERROR: unable to add forward session to map\n");
+    printf("ERROR: unable to add forward session to map\n");
     return;
   }
 
@@ -908,7 +908,7 @@ static void inline process_packet_maglev(struct rte_mbuf *m) {
   sid.saddr = bkdinfo->addr;
   sid.sport = bkdinfo->port;
   if (hashmap_insert_elem(&active_sessions, &sid, &bwd_rep) != 1) {
-    fprintf(stderr, "ERROR: unable to add backward session to map\n");
+    printf("ERROR: unable to add backward session to map\n");
     return;
   }
 }
@@ -924,10 +924,10 @@ static void inline process_nat(struct rte_mbuf *m) {
     //printf("Not an IPv4 packet %x \n", eth->ether_type);
       return;
   }
-  struct iphdr *ip = (struct iphdr *)(eth + sizeof(struct rte_ether_hdr));
+  struct iphdr *ip = (struct iphdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr));
   int ip_header_len = ip->ihl * 4;
   struct rte_udp_hdr *udp =
-      (struct rte_udp_hdr *)(eth + sizeof(struct rte_ether_hdr *) +
+      (struct rte_udp_hdr *)((uint8_t *)eth + sizeof(struct rte_ether_hdr) +
                              ip_header_len);
 
   // Change IP and port (Assuming SNAT;)
