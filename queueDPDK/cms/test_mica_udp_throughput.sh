@@ -140,7 +140,7 @@ trap stop_server EXIT INT TERM
 start_server() {
   local bypass="$1" db_size="$2" server_log="$3"
   local cmd=(sudo ./build/dol -d librte_net_qdma.so -l 0 -a "$SERVER_PCI" --
-              -P 1 -q 1 -d 1024 -a 1 -T -Q --mica-db-size "$db_size")
+              -P 1 -q 1 -d 1024 -a 9 -T -Q --mica-db-size "$db_size")
   if [[ "$bypass" == yes ]]; then
     cmd+=(-B)
   fi
