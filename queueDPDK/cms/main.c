@@ -23,6 +23,7 @@
 #include <locale.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
+#include <rte_acl.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_common.h>
@@ -421,6 +422,7 @@ enum application_id {
   MICA_UDP = 9,
   R2P2_ECHO = 10,
   R2P2_STSS = 11,
+  ACL_NAT_CMS = 12,
 };
 
 // NITROSKETCH
@@ -935,6 +937,166 @@ static void inline process_nat(struct rte_mbuf *m) {
   udp->src_port = htons(nat_port);
 }
 
+/***********************start of ACL+NAT+CMS chain part*******************/
+/*
+ * process_acl_nat_cms() below is a small NF chain: ACL -> NAT -> CMS.
+ * Each packet is first classified by a tiny rte_acl IPv4 5-tuple table
+ * (chain_acl_init() builds it once at startup); only if the ACL stage
+ * lets it through does the packet get translated by the existing
+ * process_nat() SNAT stage and then accounted for in the count-min
+ * sketch via cms_count_add().
+ *
+ * The ACL rule set here is intentionally tiny and hardcoded (unlike
+ * the file-driven ACL used by the l3fwd-acl-style apps in
+ * queueDPDK/chain, queueDPDK/rfc_chain and queueDPDK/l3fwd-acl): one
+ * deny rule (block TCP traffic to port 23/telnet) at higher priority
+ * than a catch-all allow rule. rte_acl_classify() returns 0 ("no rule
+ * matched") when neither rule fires, which is also our CHAIN_ACL_DENY
+ * value below, so the chain default-denies.
+ *
+ * Note: this harness's main loop (see main_loop()) owns mbuf lifetime
+ * uniformly for every application id -- it frees/retransmits `m`
+ * itself after process_packet() returns, the same way for every
+ * application. So "deny" here does not free the mbuf (that would race
+ * with the shared bypass/retransmit path); it simply skips the NAT
+ * and CMS stages for that packet.
+ */
+enum { CHAIN_ACL_DENY = 0, CHAIN_ACL_ALLOW = 1 };
+
+enum {
+  CHAIN_ACL_IN_PROTO = 0,
+  CHAIN_ACL_IN_VLAN, /* unused, kept so IPv4 header offsets line up */
+  CHAIN_ACL_IN_SRC,
+  CHAIN_ACL_IN_DST,
+  CHAIN_ACL_IN_PORTS,
+};
+
+enum {
+  CHAIN_PROTO_FIELD_IPV4,
+  CHAIN_SRC_FIELD_IPV4,
+  CHAIN_DST_FIELD_IPV4,
+  CHAIN_SRCP_FIELD_IPV4,
+  CHAIN_DSTP_FIELD_IPV4,
+  CHAIN_NUM_FIELDS_IPV4
+};
+
+static struct rte_acl_field_def chain_ipv4_defs[CHAIN_NUM_FIELDS_IPV4] = {
+    {
+        .type = RTE_ACL_FIELD_TYPE_BITMASK,
+        .size = sizeof(uint8_t),
+        .field_index = CHAIN_PROTO_FIELD_IPV4,
+        .input_index = CHAIN_ACL_IN_PROTO,
+        .offset = 0,
+    },
+    {
+        .type = RTE_ACL_FIELD_TYPE_MASK,
+        .size = sizeof(uint32_t),
+        .field_index = CHAIN_SRC_FIELD_IPV4,
+        .input_index = CHAIN_ACL_IN_SRC,
+        .offset = offsetof(struct rte_ipv4_hdr, src_addr) -
+                  offsetof(struct rte_ipv4_hdr, next_proto_id),
+    },
+    {
+        .type = RTE_ACL_FIELD_TYPE_MASK,
+        .size = sizeof(uint32_t),
+        .field_index = CHAIN_DST_FIELD_IPV4,
+        .input_index = CHAIN_ACL_IN_DST,
+        .offset = offsetof(struct rte_ipv4_hdr, dst_addr) -
+                  offsetof(struct rte_ipv4_hdr, next_proto_id),
+    },
+    {
+        .type = RTE_ACL_FIELD_TYPE_RANGE,
+        .size = sizeof(uint16_t),
+        .field_index = CHAIN_SRCP_FIELD_IPV4,
+        .input_index = CHAIN_ACL_IN_PORTS,
+        .offset = sizeof(struct rte_ipv4_hdr) -
+                  offsetof(struct rte_ipv4_hdr, next_proto_id),
+    },
+    {
+        .type = RTE_ACL_FIELD_TYPE_RANGE,
+        .size = sizeof(uint16_t),
+        .field_index = CHAIN_DSTP_FIELD_IPV4,
+        .input_index = CHAIN_ACL_IN_PORTS,
+        .offset = sizeof(struct rte_ipv4_hdr) -
+                  offsetof(struct rte_ipv4_hdr, next_proto_id) + sizeof(uint16_t),
+    },
+};
+
+RTE_ACL_RULE_DEF(chain_acl4_rule, RTE_DIM(chain_ipv4_defs));
+
+static struct rte_acl_ctx *chain_acl_ctx;
+
+static void chain_acl_init(void) {
+  struct chain_acl4_rule rules[2];
+
+  memset(rules, 0, sizeof(rules));
+
+  /* Rule 0 (higher priority): deny TCP traffic addressed to port 23
+   * (telnet). SRC/DST IP are left at value 0 / prefix-length 0, i.e.
+   * "match any address". */
+  rules[0].data.priority = 2;
+  rules[0].data.category_mask = 1;
+  rules[0].data.userdata = CHAIN_ACL_DENY;
+  rules[0].field[CHAIN_PROTO_FIELD_IPV4].value.u8 = IPPROTO_TCP;
+  rules[0].field[CHAIN_PROTO_FIELD_IPV4].mask_range.u8 = 0xff;
+  rules[0].field[CHAIN_SRCP_FIELD_IPV4].value.u16 = 0;
+  rules[0].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+  rules[0].field[CHAIN_DSTP_FIELD_IPV4].value.u16 = 23;
+  rules[0].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = 23;
+
+  /* Rule 1 (lower priority): catch-all allow. PROTO/SRC/DST left at
+   * value 0 / mask 0 ("any"); ports need an explicit full range. */
+  rules[1].data.priority = 1;
+  rules[1].data.category_mask = 1;
+  rules[1].data.userdata = CHAIN_ACL_ALLOW;
+  rules[1].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+  rules[1].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+
+  struct rte_acl_param acl_param = {
+      .name = "cms_chain_acl_ipv4",
+      .socket_id = SOCKET_ID_ANY,
+      .rule_size = RTE_ACL_RULE_SZ(RTE_DIM(chain_ipv4_defs)),
+      .max_rule_num = RTE_DIM(rules),
+  };
+
+  chain_acl_ctx = rte_acl_create(&acl_param);
+  if (chain_acl_ctx == NULL)
+    rte_exit(EXIT_FAILURE, "Failed to create ACL context for the ACL/NAT/CMS chain\n");
+
+  if (rte_acl_add_rules(chain_acl_ctx, (struct rte_acl_rule *)rules, RTE_DIM(rules)) < 0)
+    rte_exit(EXIT_FAILURE, "Failed to add rules to the ACL/NAT/CMS chain ACL context\n");
+
+  struct rte_acl_config acl_build_param;
+  memset(&acl_build_param, 0, sizeof(acl_build_param));
+  acl_build_param.num_categories = 1;
+  acl_build_param.num_fields = RTE_DIM(chain_ipv4_defs);
+  memcpy(&acl_build_param.defs, chain_ipv4_defs, sizeof(chain_ipv4_defs));
+
+  if (rte_acl_build(chain_acl_ctx, &acl_build_param) != 0)
+    rte_exit(EXIT_FAILURE, "Failed to build the ACL/NAT/CMS chain ACL trie\n");
+}
+
+static void inline process_acl_nat_cms(struct rte_mbuf *m) {
+  struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+  if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
+    return; /* this chain only classifies/handles IPv4 */
+
+  const uint8_t *data = rte_pktmbuf_mtod_offset(
+      m, uint8_t *,
+      sizeof(struct rte_ether_hdr) + offsetof(struct rte_ipv4_hdr, next_proto_id));
+  uint32_t result = 0;
+
+  rte_acl_classify(chain_acl_ctx, &data, &result, 1, 1);
+
+  if (result == CHAIN_ACL_DENY)
+    return; /* ACL stage blocks this packet: skip NAT + CMS */
+
+  process_nat(m);   /* NAT stage */
+  cms_count_add(m); /* CMS stage */
+}
+/***********************end of ACL+NAT+CMS chain part**********************/
+
 static void inline process_ids(struct rte_mbuf *m) {
 
   unsigned char *pkt = rte_pktmbuf_mtod(m, unsigned char *);
@@ -1428,6 +1590,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     case R2P2_ECHO:
     case R2P2_STSS:
       process_r2p2(m);
+      break;
+    case ACL_NAT_CMS: // NF chain: ACL -> NAT -> CMS
+      process_acl_nat_cms(m);
       break;
     default:
       l2_forward(m, 0);
@@ -1953,7 +2118,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       case 'a':
         application = parse_n(optarg);
         /* check application type*/
-        if (application < 0 || application > 11) {
+        if (application < 0 || application > 12) {
           printf("invalid application type\n");
           usage(prgname);
           return -1;
@@ -2286,6 +2451,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS);
     hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES);
     hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
+
+    /* initialize the ACL context used by the ACL->NAT->CMS chain
+     * (application id ACL_NAT_CMS); cheap enough to just always do it. */
+    chain_acl_init();
 
     /* Populate services hashmap with a dummy entry */
     struct service_id dummy_service_id = {0};
