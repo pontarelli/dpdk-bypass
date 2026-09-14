@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <locale.h>
 #include <netinet/in.h>
 #include <netinet/udp.h>
@@ -61,6 +62,7 @@
 #define CMD_LINE_OPT_MICA_DB_SIZE "mica-db-size"
 #define CMD_LINE_OPT_R2P2_IP "r2p2-ip"
 #define CMD_LINE_OPT_R2P2_PORT "r2p2-port"
+#define CMD_LINE_OPT_ACL_RULES "acl-rules"
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90  /* 9s (90 * 100ms) in total */
 
@@ -455,6 +457,17 @@ static int VALUE_SIZE = 256;
 // backend).
 static uint32_t r2p2_local_ip_be;
 static uint16_t r2p2_local_port_be;
+
+// Optional path to a file of ACL match rules for the ACL_NAT_CMS chain
+// (application id ACL_NAT_CMS); see chain_acl_init(). Configured via
+// --acl-rules. Same "@sip/len dip/len sp_lo : sp_hi dp_lo : dp_hi
+// proto/mask" line format as 1K.rules/10K.rules/etc. and the
+// l3fwd-acl-style apps in queueDPDK/chain, queueDPDK/rfc_chain and
+// queueDPDK/l3fwd-acl. Each line becomes an ALLOW rule (whitelist),
+// highest priority first (i.e. line order = priority order), ahead of
+// a built-in catch-all deny rule. NULL (the default) keeps the
+// original tiny hardcoded 2-rule ACL (telnet deny + allow-all).
+static const char *chain_acl_rules_file = NULL;
 // Which port/queue the packet main_loop() is currently handing to
 // process_packet() arrived on/should be replied on; __thread (not a
 // plain global) because multiple lcores run main_loop() concurrently,
@@ -946,13 +959,19 @@ static void inline process_nat(struct rte_mbuf *m) {
  * process_nat() SNAT stage and then accounted for in the count-min
  * sketch via cms_count_add().
  *
- * The ACL rule set here is intentionally tiny and hardcoded (unlike
- * the file-driven ACL used by the l3fwd-acl-style apps in
- * queueDPDK/chain, queueDPDK/rfc_chain and queueDPDK/l3fwd-acl): one
- * deny rule (block TCP traffic to port 23/telnet) at higher priority
- * than a catch-all allow rule. rte_acl_classify() returns 0 ("no rule
+ * By default the ACL rule set here is tiny and hardcoded: one deny
+ * rule (block TCP traffic to port 23/telnet) at higher priority than
+ * a catch-all allow rule. rte_acl_classify() returns 0 ("no rule
  * matched") when neither rule fires, which is also our CHAIN_ACL_DENY
  * value below, so the chain default-denies.
+ *
+ * Alternatively, --acl-rules FILE loads a whitelist from a file in the
+ * same "@sip/len dip/len sp_lo : sp_hi dp_lo : dp_hi proto/mask" format
+ * as 1K.rules/10K.rules/etc. and the l3fwd-acl-style apps in
+ * queueDPDK/chain, queueDPDK/rfc_chain and queueDPDK/l3fwd-acl; see
+ * chain_acl_load_rules(). Each line becomes an ALLOW rule (first line =
+ * highest priority) ahead of a catch-all deny rule, i.e. only traffic
+ * matching one of the loaded rules makes it to NAT + CMS.
  *
  * Note: this harness's main loop (see main_loop()) owns mbuf lifetime
  * uniformly for every application id -- it frees/retransmits `m`
@@ -1026,45 +1045,232 @@ RTE_ACL_RULE_DEF(chain_acl4_rule, RTE_DIM(chain_ipv4_defs));
 
 static struct rte_acl_ctx *chain_acl_ctx;
 
+/* ---- --acl-rules file parsing (1K.rules-style format) ---- */
+
+enum {
+  CHAIN_CB_FLD_SRC_ADDR,
+  CHAIN_CB_FLD_DST_ADDR,
+  CHAIN_CB_FLD_SRC_PORT_LOW,
+  CHAIN_CB_FLD_SRC_PORT_DLM,
+  CHAIN_CB_FLD_SRC_PORT_HIGH,
+  CHAIN_CB_FLD_DST_PORT_LOW,
+  CHAIN_CB_FLD_DST_PORT_DLM,
+  CHAIN_CB_FLD_DST_PORT_HIGH,
+  CHAIN_CB_FLD_PROTO,
+  CHAIN_CB_FLD_NUM,
+};
+
+static const char chain_cb_port_delim[] = ":";
+
+#define CHAIN_GET_CB_FIELD(in, fd, base, lim, dlm)                                                \
+  do {                                                                                             \
+    unsigned long val;                                                                            \
+    char *end;                                                                                     \
+    errno = 0;                                                                                     \
+    val = strtoul((in), &end, (base));                                                             \
+    if (errno != 0 || end[0] != (dlm) || val > (lim))                                              \
+      return -EINVAL;                                                                              \
+    (fd) = (typeof(fd))val;                                                                        \
+    (in) = end + 1;                                                                                \
+  } while (0)
+
+/* Parses "<a>.<b>.<c>.<d>/<masklen>", ClassBench/l3fwd-acl style. */
+static int chain_parse_ipv4_net(const char *in, uint32_t *addr, uint32_t *depth) {
+  uint8_t a, b, c, d, m;
+
+  CHAIN_GET_CB_FIELD(in, a, 0, UINT8_MAX, '.');
+  CHAIN_GET_CB_FIELD(in, b, 0, UINT8_MAX, '.');
+  CHAIN_GET_CB_FIELD(in, c, 0, UINT8_MAX, '.');
+  CHAIN_GET_CB_FIELD(in, d, 0, UINT8_MAX, '/');
+  CHAIN_GET_CB_FIELD(in, m, 0, sizeof(uint32_t) * CHAR_BIT, 0);
+
+  addr[0] = RTE_IPV4(a, b, c, d);
+  depth[0] = m;
+  return 0;
+}
+
+/* Parses one rule line (without the leading '@'):
+ *   <sip>/<slen> <dip>/<dlen> <sp_lo> : <sp_hi> <dp_lo> : <dp_hi> <proto>/<mask>
+ * i.e. exactly the format 1K.rules/10K.rules/etc. use (no userdata
+ * field). Fills every field of *v except data.* (priority/userdata are
+ * assigned by the caller). */
+static int chain_parse_rule_line(char *str, struct chain_acl4_rule *v) {
+  char *s, *sp, *in[CHAIN_CB_FLD_NUM];
+  static const char *dlm = " \t\r\n";
+  int i, rc;
+
+  s = str;
+  for (i = 0; i != CHAIN_CB_FLD_NUM; i++, s = NULL) {
+    in[i] = strtok_r(s, dlm, &sp);
+    if (in[i] == NULL)
+      return -EINVAL;
+  }
+
+  rc = chain_parse_ipv4_net(in[CHAIN_CB_FLD_SRC_ADDR], &v->field[CHAIN_SRC_FIELD_IPV4].value.u32,
+                            &v->field[CHAIN_SRC_FIELD_IPV4].mask_range.u32);
+  if (rc != 0)
+    return rc;
+
+  rc = chain_parse_ipv4_net(in[CHAIN_CB_FLD_DST_ADDR], &v->field[CHAIN_DST_FIELD_IPV4].value.u32,
+                            &v->field[CHAIN_DST_FIELD_IPV4].mask_range.u32);
+  if (rc != 0)
+    return rc;
+
+  CHAIN_GET_CB_FIELD(in[CHAIN_CB_FLD_SRC_PORT_LOW], v->field[CHAIN_SRCP_FIELD_IPV4].value.u16, 0,
+                     UINT16_MAX, 0);
+  CHAIN_GET_CB_FIELD(in[CHAIN_CB_FLD_SRC_PORT_HIGH],
+                     v->field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16, 0, UINT16_MAX, 0);
+  if (strncmp(in[CHAIN_CB_FLD_SRC_PORT_DLM], chain_cb_port_delim,
+              sizeof(chain_cb_port_delim)) != 0)
+    return -EINVAL;
+
+  CHAIN_GET_CB_FIELD(in[CHAIN_CB_FLD_DST_PORT_LOW], v->field[CHAIN_DSTP_FIELD_IPV4].value.u16, 0,
+                     UINT16_MAX, 0);
+  CHAIN_GET_CB_FIELD(in[CHAIN_CB_FLD_DST_PORT_HIGH],
+                     v->field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16, 0, UINT16_MAX, 0);
+  if (strncmp(in[CHAIN_CB_FLD_DST_PORT_DLM], chain_cb_port_delim,
+              sizeof(chain_cb_port_delim)) != 0)
+    return -EINVAL;
+
+  if (v->field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 < v->field[CHAIN_SRCP_FIELD_IPV4].value.u16 ||
+      v->field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 < v->field[CHAIN_DSTP_FIELD_IPV4].value.u16)
+    return -EINVAL;
+
+  CHAIN_GET_CB_FIELD(in[CHAIN_CB_FLD_PROTO], v->field[CHAIN_PROTO_FIELD_IPV4].value.u8, 0,
+                     UINT8_MAX, '/');
+  CHAIN_GET_CB_FIELD(in[CHAIN_CB_FLD_PROTO], v->field[CHAIN_PROTO_FIELD_IPV4].mask_range.u8, 0,
+                     UINT8_MAX, 0);
+
+  return 0;
+}
+
+#define CHAIN_ACL_LINE_MAX 512
+
+/* Loads every '@'-prefixed rule line in `path` (blank lines and any
+ * other line, e.g. comments, are skipped) into a freshly calloc'd
+ * array of chain_acl4_rule, one entry per rule, in file order. Only
+ * v->field[] is filled in; the caller still has to set data.priority/
+ * data.userdata/data.category_mask on each entry. Exits the process on
+ * any I/O or parse error -- there's no sensible way to run the
+ * ACL/NAT/CMS chain with a half-loaded rule file. */
+static unsigned int chain_acl_load_rules(const char *path, struct chain_acl4_rule **out_rules) {
+  struct chain_acl4_rule *rules;
+  char buff[CHAIN_ACL_LINE_MAX];
+  unsigned int num, line_no, cnt;
+  FILE *fh;
+
+  fh = fopen(path, "rb");
+  if (fh == NULL)
+    rte_exit(EXIT_FAILURE, "Failed to open ACL rules file '%s': %s\n", path, strerror(errno));
+
+  num = 0;
+  while (fgets(buff, sizeof(buff), fh) != NULL) {
+    if (buff[0] == '@')
+      num++;
+  }
+
+  if (num == 0)
+    rte_exit(EXIT_FAILURE, "No ACL rules found in '%s'\n", path);
+
+  rules = calloc(num, sizeof(*rules));
+  if (rules == NULL)
+    rte_exit(EXIT_FAILURE, "Failed to allocate memory for %u ACL rules\n", num);
+
+  rewind(fh);
+  line_no = 0;
+  cnt = 0;
+  while (fgets(buff, sizeof(buff), fh) != NULL) {
+    line_no++;
+    if (buff[0] != '@')
+      continue;
+
+    if (chain_parse_rule_line(buff + 1, &rules[cnt]) != 0)
+      rte_exit(EXIT_FAILURE, "%s: line %u: failed to parse ACL rule\n", path, line_no);
+    cnt++;
+  }
+
+  fclose(fh);
+
+  *out_rules = rules;
+  return num;
+}
+
 static void chain_acl_init(void) {
-  struct chain_acl4_rule rules[2];
+  struct chain_acl4_rule *rules;
+  unsigned int num_rules, i;
 
-  memset(rules, 0, sizeof(rules));
+  if (chain_acl_rules_file != NULL) {
+    unsigned int num_loaded = chain_acl_load_rules(chain_acl_rules_file, &rules);
 
-  /* Rule 0 (higher priority): deny TCP traffic addressed to port 23
-   * (telnet). SRC/DST IP are left at value 0 / prefix-length 0, i.e.
-   * "match any address". */
-  rules[0].data.priority = 2;
-  rules[0].data.category_mask = 1;
-  rules[0].data.userdata = CHAIN_ACL_DENY;
-  rules[0].field[CHAIN_PROTO_FIELD_IPV4].value.u8 = IPPROTO_TCP;
-  rules[0].field[CHAIN_PROTO_FIELD_IPV4].mask_range.u8 = 0xff;
-  rules[0].field[CHAIN_SRCP_FIELD_IPV4].value.u16 = 0;
-  rules[0].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
-  rules[0].field[CHAIN_DSTP_FIELD_IPV4].value.u16 = 23;
-  rules[0].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = 23;
+    /* Grow by one slot for the catch-all deny rule appended below. */
+    num_rules = num_loaded + 1;
+    rules = realloc(rules, num_rules * sizeof(*rules));
+    if (rules == NULL)
+      rte_exit(EXIT_FAILURE, "Failed to allocate memory for %u ACL rules\n", num_rules);
+    memset(&rules[num_loaded], 0, sizeof(*rules));
 
-  /* Rule 1 (lower priority): catch-all allow. PROTO/SRC/DST left at
-   * value 0 / mask 0 ("any"); ports need an explicit full range. */
-  rules[1].data.priority = 1;
-  rules[1].data.category_mask = 1;
-  rules[1].data.userdata = CHAIN_ACL_ALLOW;
-  rules[1].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
-  rules[1].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+    /* Loaded rules are ALLOW rules (whitelist); first-listed = highest
+     * priority, so that line order in the file matches ACL evaluation
+     * order. */
+    for (i = 0; i < num_loaded; i++) {
+      rules[i].data.priority = (int32_t)(num_loaded - i);
+      rules[i].data.category_mask = 1;
+      rules[i].data.userdata = CHAIN_ACL_ALLOW;
+    }
+
+    /* Catch-all deny, lower priority than every loaded rule. */
+    rules[num_loaded].data.priority = 0;
+    rules[num_loaded].data.category_mask = 1;
+    rules[num_loaded].data.userdata = CHAIN_ACL_DENY;
+    rules[num_loaded].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+    rules[num_loaded].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+
+    printf("ACL/NAT/CMS chain: loaded %u allow rule(s) from '%s' (+ built-in deny-all)\n",
+           num_loaded, chain_acl_rules_file);
+  } else {
+    /* Built-in tiny hardcoded ruleset (unchanged default behaviour). */
+    num_rules = 2;
+    rules = calloc(num_rules, sizeof(*rules));
+    if (rules == NULL)
+      rte_exit(EXIT_FAILURE, "Failed to allocate memory for ACL rules\n");
+
+    /* Rule 0 (higher priority): deny TCP traffic addressed to port 23
+     * (telnet). SRC/DST IP are left at value 0 / prefix-length 0, i.e.
+     * "match any address". */
+    rules[0].data.priority = 2;
+    rules[0].data.category_mask = 1;
+    rules[0].data.userdata = CHAIN_ACL_DENY;
+    rules[0].field[CHAIN_PROTO_FIELD_IPV4].value.u8 = IPPROTO_TCP;
+    rules[0].field[CHAIN_PROTO_FIELD_IPV4].mask_range.u8 = 0xff;
+    rules[0].field[CHAIN_SRCP_FIELD_IPV4].value.u16 = 0;
+    rules[0].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+    rules[0].field[CHAIN_DSTP_FIELD_IPV4].value.u16 = 23;
+    rules[0].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = 23;
+
+    /* Rule 1 (lower priority): catch-all allow. PROTO/SRC/DST left at
+     * value 0 / mask 0 ("any"); ports need an explicit full range. */
+    rules[1].data.priority = 1;
+    rules[1].data.category_mask = 1;
+    rules[1].data.userdata = CHAIN_ACL_ALLOW;
+    rules[1].field[CHAIN_SRCP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+    rules[1].field[CHAIN_DSTP_FIELD_IPV4].mask_range.u16 = UINT16_MAX;
+  }
 
   struct rte_acl_param acl_param = {
       .name = "cms_chain_acl_ipv4",
       .socket_id = SOCKET_ID_ANY,
       .rule_size = RTE_ACL_RULE_SZ(RTE_DIM(chain_ipv4_defs)),
-      .max_rule_num = RTE_DIM(rules),
+      .max_rule_num = num_rules,
   };
 
   chain_acl_ctx = rte_acl_create(&acl_param);
   if (chain_acl_ctx == NULL)
     rte_exit(EXIT_FAILURE, "Failed to create ACL context for the ACL/NAT/CMS chain\n");
 
-  if (rte_acl_add_rules(chain_acl_ctx, (struct rte_acl_rule *)rules, RTE_DIM(rules)) < 0)
+  if (rte_acl_add_rules(chain_acl_ctx, (struct rte_acl_rule *)rules, num_rules) < 0)
     rte_exit(EXIT_FAILURE, "Failed to add rules to the ACL/NAT/CMS chain ACL context\n");
+
+  free(rules);
 
   struct rte_acl_config acl_build_param;
   memset(&acl_build_param, 0, sizeof(acl_build_param));
@@ -1982,7 +2188,10 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         "	      Default: alternate port pairs\n"
         "  --mica-db-size N: number of distinct keys preloaded into the MICA "
         "table (default 2000, must match the traffic generator's "
-        "--mica-db-size)\n\n",
+        "--mica-db-size)\n"
+        "  --acl-rules FILE: for the ACL_NAT_CMS chain (-a 12), load an "
+        "ACL whitelist from FILE instead of the built-in 2-rule ACL; "
+        "same line format as 1K.rules/10K.rules/etc.\n\n",
         prgname);
   }
 
@@ -2090,6 +2299,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
     CMD_LINE_OPT_MICA_DB_SIZE_NUM,
     CMD_LINE_OPT_R2P2_IP_NUM,
     CMD_LINE_OPT_R2P2_PORT_NUM,
+    CMD_LINE_OPT_ACL_RULES_NUM,
   };
 
   static const struct option lgopts[] = {
@@ -2099,6 +2309,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
       {CMD_LINE_OPT_MICA_DB_SIZE, required_argument, 0, CMD_LINE_OPT_MICA_DB_SIZE_NUM},
       {CMD_LINE_OPT_R2P2_IP, required_argument, 0, CMD_LINE_OPT_R2P2_IP_NUM},
       {CMD_LINE_OPT_R2P2_PORT, required_argument, 0, CMD_LINE_OPT_R2P2_PORT_NUM},
+      {CMD_LINE_OPT_ACL_RULES, required_argument, 0, CMD_LINE_OPT_ACL_RULES_NUM},
       {NULL, 0, 0, 0}};
 
   /* Parse the argument given in the command line of the application */
@@ -2256,6 +2467,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         r2p2_local_port_be = rte_cpu_to_be_16((uint16_t)v);
         break;
       }
+      case CMD_LINE_OPT_ACL_RULES_NUM:
+        chain_acl_rules_file = optarg;
+        break;
 
       default:
         usage(prgname);
