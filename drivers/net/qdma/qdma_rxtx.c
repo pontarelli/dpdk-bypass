@@ -621,6 +621,34 @@ uint16_t get_cidx(void *rx_queue) {
   return cidx;
 }
 
+/* Bring-up: scarta le prime n completion con payload di questa coda.
+ * Le entry vengono consumate dal CMPT ring (la CIDX di completion la avanza
+ * gia' process_cmpt_ring), ma rx_tail non si muove: nessun mbuf sale
+ * all'applicazione e nessun credito descrittore torna all'FPGA.
+ * Da chiamare dopo rte_eth_dev_start().
+ */
+void qdma_set_cmpt_skip(void *rx_queue, uint32_t n) {
+  struct qdma_rx_queue *rxq = rx_queue;
+
+  rxq->cmpt_skip = n;
+  rxq->cmpt_skipped = 0;
+  rxq->cmpt_skip_wrap = 0;
+}
+
+/* Stato dello scarto: ritorna quante ne restano, e opzionalmente quante ne
+ * sono state scartate e quante di quelle portavano un codice wrap != 0.
+ */
+uint32_t qdma_get_cmpt_skip(void *rx_queue, uint64_t *skipped,
+                            uint64_t *skipped_wrap) {
+  struct qdma_rx_queue *rxq = rx_queue;
+
+  if (skipped)
+    *skipped = rxq->cmpt_skipped;
+  if (skipped_wrap)
+    *skipped_wrap = rxq->cmpt_skip_wrap;
+  return rxq->cmpt_skip;
+}
+
 static uint32_t rx_queue_count(void *rx_queue) {
   struct qdma_rx_queue *rxq = rx_queue;
   struct wb_status *wb_status;
@@ -962,6 +990,21 @@ static uint16_t prepare_packets(struct qdma_rx_queue *rxq,
     pkt_id = qdma_ul_get_cmpt_pkt_id(&rxq->cmpt_data[count]);
     wrap = qdma_ul_get_cmpt_rsvd2(&rxq->cmpt_data[count]);
     if (pkt_length) {
+      /* Scarto iniziale: la entry CMPT e' gia' stata consumata da
+       * process_cmpt_ring, qui semplicemente non la si traduce in un mbuf e
+       * non si tocca rx_tail. Il codice wrap viene contato ma non applicato:
+       * se ne cade uno dentro la finestra di scarto, l'FPGA fa il salto di
+       * -255/-511 e il SW no, quindi l'offset risultante non e' piu' n.
+       * Controllare cmpt_skip_wrap dopo il bring-up.
+       */
+      if (unlikely(rxq->cmpt_skip)) {
+        rxq->cmpt_skip--;
+        rxq->cmpt_skipped++;
+        if (unlikely(wrap))
+          rxq->cmpt_skip_wrap++;
+        count++;
+        continue;
+      }
       rxq->stats.pkts++;
       rxq->stats.bytes += pkt_length;
       if (rxq->shring_enabled) {

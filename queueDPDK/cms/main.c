@@ -88,6 +88,10 @@ uint64_t get_desc(struct rte_eth_dev *dev, uint16_t qid, int desc_idx);
 uint16_t get_cidx(void *rx_queue);
 uint16_t get_cidx_tx(void *tx_queue, bool elastic);
 
+void qdma_set_cmpt_skip(void *rx_queue, uint32_t n);
+uint32_t qdma_get_cmpt_skip(void *rx_queue, uint64_t *skipped,
+                            uint64_t *skipped_wrap);
+
 int qdma_bypass_reg_get_prefetch_tag(void *dev_hndl, uint16_t qid,
                                      uint32_t *tag);
 
@@ -310,6 +314,8 @@ bool debug = false;
 bool debug_timestamp = false;
 bool elastic = false;
 bool retransmit = false;
+/* Bring-up: scarta le prime N completion per coda senza avanzare rx_tail. */
+uint32_t cmpl_skip = 0;
 uint64_t phys_addr;
 uint64_t end_time = 0;
 
@@ -633,6 +639,18 @@ static void print_stats(void) {
       (unsigned long long)total_packets_dropped,
       (unsigned long long)(total_packets_dropped - total_packets_dropped_prev));
   //printf("total: %u\n", total);
+  if (cmpl_skip && dev != NULL) {
+    for (uint32_t q = 0; q < rx_queue; q++) {
+      uint64_t skipped = 0, skipped_wrap = 0;
+      uint32_t left =
+          qdma_get_cmpt_skip(dev->data->rx_queues[q], &skipped, &skipped_wrap);
+      printf("q%u cmpt-skip: scartate %llu, ne restano %u%s\n", q,
+             (unsigned long long)skipped, left,
+             skipped_wrap ? "  <-- ATTENZIONE: wrap dentro la finestra di "
+                            "scarto, l'offset non e' piu' quello atteso"
+                          : "");
+    }
+  }
   if (bypass)
     printf("With bypass\n");
   else
@@ -2171,6 +2189,8 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         "  -c N: configure number of columns (default is 1048576)\n"
         "  -P PORTMASK: hexadecimal bitmask of ports to configure\n"
         "  -q NQ: number of queue (=ports) per lcore (default is 1)\n"
+        "  -N N: bring-up, scarta le prime N completion di ogni coda senza "
+        "avanzare i descrittori in SW (default 0)\n"
         "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to "
         "disable, 10 default, 86400 maximum)\n"
         "  --[no-]mac-updating: Enable or disable MAC addresses updating "
@@ -2287,6 +2307,7 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
                                       "L"  /* enable LIFO */
                                       "t"  /* enable toasty logic */
                                       "s"  /* enable shRing logic */
+                                      "N:" /* skip first N completions/queue */
       ;
 
   enum {
@@ -2425,6 +2446,9 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
         break;
       case 's':
         shring = true;
+        break;
+      case 'N':
+        cmpl_skip = parse_n(optarg);
         break;
       /* long options */
       case CMD_LINE_OPT_PORTMAP_NUM:
@@ -3104,6 +3128,16 @@ static void inline process_nitrosketch(struct rte_mbuf *m) {
           //qdma_write_direct_queue_bypass_registers(
           //qdma_write_queue_bypass_registers(
               dev, qid, phys_addr, prefetch_tag[qid & qmask], 1, nb_rxd);
+
+          /* Bring-up: scarta le prime N completion di questa coda senza
+           * avanzare rx_tail. Va fatto dopo rte_eth_dev_start(), altrimenti
+           * il setup della coda azzera il contatore.
+           */
+          if (cmpl_skip) {
+            qdma_set_cmpt_skip(dev->data->rx_queues[qid], cmpl_skip);
+            printf("q%u: scarto le prime %u completion senza avanzare i "
+                   "descrittori\n", qid, cmpl_skip);
+          }
         }
         if (freerunning && (debug|| debug_timestamp))
           qdma_write_bypass_reg_debug(dev, 3);

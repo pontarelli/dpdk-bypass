@@ -188,6 +188,15 @@ struct qdma_rx_queue {
 	uint16_t		rx_wraps256;
 	uint16_t		rx_wraps512;
 	uint16_t		rx_tail;
+
+	/* Debug/bring-up: scarta le prime N completion di questa coda senza
+	 * avanzare rx_tail (quindi senza restituire credito all'FPGA).
+	 * Si imposta con qdma_set_cmpt_skip() dopo rte_eth_dev_start().
+	 */
+	uint32_t		cmpt_skip;        /* completion ancora da scartare */
+	uint64_t		cmpt_skipped;     /* quante ne sono state scartate */
+	uint64_t		cmpt_skip_wrap;   /* di cui con codice wrap != 0 */
+
 	uint16_t		cmpt_desc_len;
 	uint16_t		rx_buff_size;
 	uint16_t		nb_rx_desc; /**< number of RX descriptors. */

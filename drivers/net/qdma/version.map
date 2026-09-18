@@ -30,5 +30,8 @@ DPDK_21 {
 	rte_pmd_qdma_dbg_qdevice;
 	rte_pmd_qdma_dev_close;
 
+	qdma_set_cmpt_skip;
+	qdma_get_cmpt_skip;
+
 	local: *;
 };
